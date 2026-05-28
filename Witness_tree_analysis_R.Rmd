@@ -1,0 +1,2633 @@
+---
+title: "Witness Tree Project: Comprehensive Analysis"
+author: "Conor Walsh"
+date: "`r Sys.Date()`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+    highlight: tango
+---
+
+```{r}
+# ============================================================
+# SECTION 0: SETUP, LIBRARIES, PATHS, AND HELPER FUNCTIONS
+# ============================================================
+# This section loads all required packages, sets up file paths,
+# defines helper functions for the entire analysis.
+# ============================================================
+
+# ---------------------------
+# 0.1 Install missing packages (if any)
+# ---------------------------
+required_packages <- c(
+  "tidyverse", "ggplot2", "knitr", "broom", "purrr", "corrplot",
+  "ggpubr", "ggthemes", "patchwork", "lme4", "lmerTest", "emmeans",
+  "ggrepel", "readxl", "rstatix", "grid", "gridExtra", "cowplot",
+  "viridis", "scales", "Hmisc", "psych", "performance", "see"
+)
+
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+# ---------------------------
+# 0.2 Load libraries
+# ---------------------------
+library(tidyverse)   # data manipulation and visualization
+library(ggplot2)     # advanced plotting
+library(knitr)       # nice tables
+library(broom)       # tidy model outputs
+library(purrr)       # functional programming
+library(corrplot)    # correlation matrices
+library(ggpubr)      # publication-ready plots
+library(ggthemes)    # extra themes
+library(patchwork)   # combine plots
+library(lme4)        # mixed models
+library(lmerTest)    # p-values for mixed models
+library(emmeans)     # estimated marginal means
+library(ggrepel)     # repel text labels
+library(readxl)      # read Excel files
+library(rstatix)     # pipe-friendly statistics
+library(grid)        # graphical elements
+library(gridExtra)   # arrange grid plots
+library(cowplot)     # complex plot arrangements
+library(viridis)     # colour-blind friendly palettes
+library(scales)      # label formatting
+library(Hmisc)       # correlation with p-values
+library(psych)       # descriptive statistics
+library(performance) # model diagnostics
+library(see)         # model visualization
+
+# ---------------------------
+# 0.3 Set global options
+# ---------------------------
+options(scipen = 999)          # avoid scientific notation
+options(stringsAsFactors = FALSE)
+set.seed(42)                   # reproducibility
+theme_set(theme_minimal(base_size = 12))  # default theme
+
+# ---------------------------
+# 0.4 Define paths
+# ---------------------------
+# Assuming the working directory is the project root
+data_dir   <- "Data"
+clean_dir  <- file.path(data_dir, "clean_data")
+outputs_dir <- file.path(data_dir, "outputs")
+figures_dir <- outputs_dir
+tables_dir  <- outputs_dir
+
+# Create output directories if they don't exist
+dir.create(outputs_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(outputs_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(outputs_dir, "tables"), recursive = TRUE, showWarnings = FALSE)
+
+# Paths to the two clean Excel files
+nbg_file <- file.path(clean_dir, "NBGall.xlsx")
+tcdbg_file <- file.path(clean_dir, "masters_all_years.xlsx")
+
+# Check if files exist
+if (!file.exists(nbg_file)) stop("NBG file not found: ", nbg_file)
+if (!file.exists(tcdbg_file)) stop("TCDBG file not found: ", tcdbg_file)
+
+cat("✅ Paths configured successfully.\n")
+cat("  NBG file:", nbg_file, "\n")
+cat("  TCDBG file:", tcdbg_file, "\n")
+
+# ---------------------------
+# 0.5 Helper functions
+# ---------------------------
+
+# Standard error function
+se <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) <= 1) return(NA_real_)
+  sd(x) / sqrt(length(x))
+}
+
+# Coefficient of variation
+cv <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) <= 1) return(NA_real_)
+  m <- mean(x)
+  if (is.na(m) || m == 0) return(NA_real_)
+  sd(x) / m
+}
+
+# Pretty species names for plotting (with italics)
+pretty_species <- function(x) {
+  x %>%
+    str_replace_all("_", " ") %>%
+    str_to_sentence() %>%
+    str_replace_all(" X ", " × ") %>%
+    str_replace_all(" Subsp ", " subsp. ") %>%
+    str_replace_all(" Var ", " var. ")
+}
+
+# Clean species names for joining (lowercase, underscores)
+clean_species_name <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all(" ", "_") %>%
+    str_replace_all("×", "x") %>%
+    str_replace_all("[^a-z0-9_]", "") %>%
+    str_replace_all("_+", "_") %>%
+    str_replace_all("_$", "")
+}
+
+# Significance stars
+sig_stars <- function(p) {
+  case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ "ns"
+  )
+}
+
+# Format p-values for tables
+format_p <- function(p, digits = 3) {
+  ifelse(p < 0.001, "<0.001", round(p, digits))
+}
+
+# Colour palettes
+pal_site <- c("TCDBG" = "#1F78B4", "NBG" = "#E6550D")
+pal_pm <- c("PM10" = "#2C6E49", "PM2.5" = "#C62828")
+pal_evergreen <- c("Deciduous" = "#90A4AE", "Evergreen" = "#2E7D32")
+pal_trichomes <- c("No" = "#90A4AE", "Yes" = "#6A1B9A")
+pal_texture <- c("smooth" = "#A6CEE3", "medium" = "#1F78B4", "rough" = "#E31A23")
+
+# Custom theme for publication-ready plots
+theme_wtp <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = base_size + 2, hjust = 0),
+      plot.subtitle = element_text(size = base_size - 1, colour = "grey40"),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(colour = "black"),
+      strip.text = element_text(face = "bold", size = base_size),
+      legend.title = element_text(face = "bold"),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "grey90", linewidth = 0.3),
+      plot.caption = element_text(size = base_size - 2, colour = "grey50")
+    )
+}
+
+# Save plot helper
+save_plot_wtp <- function(plot_obj, filename, width = 10, height = 7, dpi = 300) {
+  ggsave(
+    filename = file.path(figures_dir, filename),
+    plot = plot_obj,
+    width = width,
+    height = height,
+    dpi = dpi,
+    bg = "white"
+  )
+  cat("  Saved:", filename, "\n")
+}
+
+cat("\n✅ Helper functions loaded.\n")
+cat("Ready for Section 1: Data Loading and Aggregation.\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 1: LOAD AND AGGREGATE DATA
+# ============================================================
+# This section loads the two clean Excel files, inspects their structure,
+# and aggregates particle-level data to sample-level.
+# Output: nbg_data and tcdbg_data (sample-level data frames)
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                     SECTION 1: LOAD AND AGGREGATE DATA                         ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 1.1 Load NBG data
+# ---------------------------
+cat("\n--- 1.1 Loading NBG data ---\n")
+
+nbg_raw <- read_excel(nbg_file)
+cat("  Rows:", nrow(nbg_raw), "\n")
+cat("  Columns:", ncol(nbg_raw), "\n")
+cat("  Column names:\n")
+print(names(nbg_raw))
+
+# Quick glimpse of first rows
+cat("\n  First 5 rows (selected columns):\n")
+print(nbg_raw %>% 
+        select(any_of(c("species_name", "Year", "class", "areaμm", "source_file"))) %>% 
+        head(5))
+
+# ---------------------------
+# 1.2 Load TCDBG data
+# ---------------------------
+cat("\n--- 1.2 Loading TCDBG data ---\n")
+
+tcdbg_raw <- read_excel(tcdbg_file)
+cat("  Rows:", nrow(tcdbg_raw), "\n")
+cat("  Columns:", ncol(tcdbg_raw), "\n")
+cat("  Column names:\n")
+print(names(tcdbg_raw))
+
+cat("\n  First 5 rows (selected columns):\n")
+print(tcdbg_raw %>% 
+        select(any_of(c("species_name", "Year", "Class", "Areaμm", "source_file"))) %>% 
+        head(5))
+
+
+
+# DIAGNOSTIC: check grain of raw data by year
+cat("\nTCDBG raw rows per species per year (should be >> 1 if particle-level):\n")
+tcdbg_raw %>%
+  group_by(Year, species_name) %>%
+  summarise(n_rows = n(), .groups = "drop") %>%
+  group_by(Year) %>%
+  summarise(median_rows_per_species = median(n_rows),
+            min_rows = min(n_rows),
+            max_rows = max(n_rows)) %>%
+  print()
+
+# ---------------------------
+# 1.3 Standardise column names
+# ---------------------------
+cat("\n--- 1.3 Standardising column names ---\n")
+
+# For NBG: rename key columns to a consistent standard
+nbg_std <- nbg_raw %>%
+  rename(
+    species = species_name,
+    year = Year,
+    pm_class = class,
+    area_um2 = areaμm,
+    ecd_um = ecdμm,
+    perimeter_um = perimeterμm,
+    sample_id = source_file
+  ) %>%
+  mutate(
+    site = "NBG",
+    year = as.integer(year)
+  )
+
+# For TCDBG: rename key columns
+tcdbg_std <- tcdbg_raw %>%
+  rename(
+    species = species_name,
+    year = Year,
+    pm_class = Class,
+    area_um2 = Areaμm,
+    ecd_um = ECDμm,
+    perimeter_um = Perimeterμm,
+    sample_id = Code           # was: source_file
+  ) %>%
+  mutate(
+    site = "TCDBG",
+    year = as.integer(year)
+  )
+
+cat("✅ Column names standardised.\n")
+
+# ---------------------------
+# 1.4 Filter valid PM classes (PM10, PM2.5)
+# ---------------------------
+cat("\n--- 1.4 Filtering valid PM classes ---\n")
+
+standardise_pm_class <- function(x) {
+  case_when(
+    str_detect(tolower(x), "pm10") ~ "PM10",
+    str_detect(tolower(x), "pm2\\.5") ~ "PM2.5",
+    TRUE ~ NA_character_
+  )
+}
+
+nbg_std <- nbg_std %>%
+  mutate(pm_type = standardise_pm_class(pm_class)) %>%
+  filter(!is.na(pm_type), !is.na(area_um2), area_um2 > 0)
+
+tcdbg_std <- tcdbg_std %>%
+  mutate(pm_type = standardise_pm_class(pm_class)) %>%
+  filter(!is.na(pm_type), !is.na(area_um2), area_um2 > 0)
+
+cat("  NBG valid particles:", nrow(nbg_std), "\n")
+cat("  TCDBG valid particles:", nrow(tcdbg_std), "\n")
+
+# ---------------------------
+# 1.5 Aggregate to sample-level
+# ---------------------------
+cat("\n--- 1.5 Aggregating to sample-level ---\n")
+
+# NBG: group by sample_id, year, pm_type, species, and trait columns (constant per species)
+nbg_sample <- nbg_std %>%
+  group_by(sample_id, year, pm_type, species, site) %>%
+  summarise(
+    n_particles = n(),
+    mean_particle_area_um2 = mean(area_um2, na.rm = TRUE),
+    median_particle_area_um2 = median(area_um2, na.rm = TRUE),
+    sd_particle_area_um2 = sd(area_um2, na.rm = TRUE),
+    se_particle_area_um2 = se(area_um2),
+    # Take first trait values (they are constant per species within the dataset)
+    evergreen = first(evergreen),
+    trichomes = first(trichomes),
+    surface_texture = first(surface_texture),
+    leaf_size_class = first(leaf_size_class),
+    canopy_density = first(canopy_density),
+    mean_angle = first(mean_angle),
+    .groups = "drop"
+  )
+
+# TCDBG: same grouping
+tcdbg_sample <- tcdbg_std %>%
+  group_by(sample_id, year, pm_type, species, site) %>%
+  summarise(
+    n_particles = n(),
+    mean_particle_area_um2 = mean(area_um2, na.rm = TRUE),
+    median_particle_area_um2 = median(area_um2, na.rm = TRUE),
+    sd_particle_area_um2 = sd(area_um2, na.rm = TRUE),
+    se_particle_area_um2 = se(area_um2),
+    evergreen = first(evergreen),
+    trichomes = first(trichomes),
+    surface_texture = first(surface_texture),
+    leaf_size_class = first(leaf_size_class),
+    canopy_density = first(canopy_density),
+    mean_angle = first(mean_angle),
+    .groups = "drop"
+  )
+
+cat("  NBG samples:", nrow(nbg_sample), "\n")
+cat("  TCDBG samples:", nrow(tcdbg_sample), "\n")
+
+# ---------------------------
+# 1.6 Create combined dataset for comparative analyses (optional)
+# ---------------------------
+cat("\n--- 1.6 Creating combined dataset (optional) ---\n")
+
+combined_sample <- bind_rows(nbg_sample, tcdbg_sample) %>%
+  mutate(
+    log_particles = log(n_particles + 1),
+    log_particle_size = log(mean_particle_area_um2 + 1),
+    pm_type = factor(pm_type, levels = c("PM10", "PM2.5")),
+    site = factor(site, levels = c("TCDBG", "NBG"))
+  )
+
+cat("  Combined samples:", nrow(combined_sample), "\n")
+cat("  Years:", paste(sort(unique(combined_sample$year)), collapse = ", "), "\n")
+cat("  Species:", n_distinct(combined_sample$species), "\n")
+
+# ---------------------------
+# 1.7 Quick summary statistics
+# ---------------------------
+cat("\n--- 1.7 Summary statistics ---\n")
+
+cat("\nNBG particle counts per sample (by PM type):\n")
+nbg_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    mean_n = round(mean(n_particles), 1),
+    sd_n = round(sd(n_particles), 1),
+    median_n = median(n_particles),
+    range_n = paste(min(n_particles), "-", max(n_particles))
+  ) %>%
+  print()
+
+cat("\nTCDBG particle counts per sample (by PM type):\n")
+tcdbg_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    mean_n = round(mean(n_particles), 1),
+    sd_n = round(sd(n_particles), 1),
+    median_n = median(n_particles),
+    range_n = paste(min(n_particles), "-", max(n_particles))
+  ) %>%
+  print()
+
+cat("\nNBG particle sizes (µm²) per sample (by PM type):\n")
+nbg_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    mean_size = round(mean(mean_particle_area_um2), 2),
+    sd_size = round(sd(mean_particle_area_um2), 2),
+    median_size = round(median(mean_particle_area_um2), 2)
+  ) %>%
+  print()
+
+cat("\nTCDBG particle sizes (µm²) per sample (by PM type):\n")
+tcdbg_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    mean_size = round(mean(mean_particle_area_um2), 2),
+    sd_size = round(sd(mean_particle_area_um2), 2),
+    median_size = round(median(mean_particle_area_um2), 2)
+  ) %>%
+  print()
+
+# ---------------------------
+# 1.8 Save aggregated data for later use
+# ---------------------------
+cat("\n--- 1.8 Saving aggregated data ---\n")
+
+write_csv(nbg_sample, file.path(tables_dir, "nbg_sample_level.csv"))
+write_csv(tcdbg_sample, file.path(tables_dir, "tcdbg_sample_level.csv"))
+write_csv(combined_sample, file.path(tables_dir, "combined_sample_level.csv"))
+
+cat("✅ Saved sample-level data to tables directory.\n")
+
+cat("\n✅ Section 1 complete. Data loaded and aggregated.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 2: DESCRIPTIVE STATISTICS AND DATA OVERVIEW
+# ============================================================
+# This section provides comprehensive summaries of the sample-level data,
+# including distributions, summary tables, and initial visualisations.
+# We analyse NBG and TCDBG separately, then compare.
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 2: DESCRIPTIVE STATISTICS AND DATA OVERVIEW               ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 2.1 Overall summary tables
+# ---------------------------
+cat("\n--- 2.1 Overall summary by site and PM type ---\n")
+
+# Function to create summary table
+summary_table <- function(df, site_name) {
+  df %>%
+    group_by(pm_type) %>%
+    summarise(
+      n_samples = n(),
+      n_species = n_distinct(species),
+      n_years = n_distinct(year),
+      years = paste(sort(unique(year)), collapse = ", "),
+      # Particle count metrics
+      mean_particles = round(mean(n_particles), 1),
+      sd_particles = round(sd(n_particles), 1),
+      median_particles = median(n_particles),
+      min_particles = min(n_particles),
+      max_particles = max(n_particles),
+      # Particle size metrics
+      mean_size = round(mean(mean_particle_area_um2), 2),
+      sd_size = round(sd(mean_particle_area_um2), 2),
+      median_size = round(median(mean_particle_area_um2), 2),
+      min_size = round(min(mean_particle_area_um2), 2),
+      max_size = round(max(mean_particle_area_um2), 2),
+      .groups = "drop"
+    ) %>%
+    mutate(site = site_name) %>%
+    select(site, everything())
+}
+
+nbg_summary <- summary_table(nbg_sample, "NBG")
+tcdbg_summary <- summary_table(tcdbg_sample, "TCDBG")
+combined_summary <- bind_rows(nbg_summary, tcdbg_summary)
+
+cat("\n=== Summary by site and PM type ===\n")
+print(combined_summary)
+
+# Save table
+write_csv(combined_summary, file.path(tables_dir, "summary_by_site_pm.csv"))
+
+# ---------------------------
+# 2.2 Yearly summary
+# ---------------------------
+cat("\n--- 2.2 Yearly summary ---\n")
+
+yearly_summary <- combined_sample %>%
+  group_by(site, year, pm_type) %>%
+  summarise(
+    n_samples = n(),
+    mean_particles = round(mean(n_particles), 1),
+    se_particles = round(se(n_particles), 2),
+    mean_size = round(mean(mean_particle_area_um2), 2),
+    se_size = round(se(mean_particle_area_um2), 2),
+    .groups = "drop"
+  )
+
+cat("\nYearly summary:\n")
+print(yearly_summary)
+
+write_csv(yearly_summary, file.path(tables_dir, "yearly_summary.csv"))
+
+# ---------------------------
+# 2.3 Species summary (overall)
+# ---------------------------
+cat("\n--- 2.3 Species summary (across all years) ---\n")
+
+species_summary <- combined_sample %>%
+  group_by(site, species, pm_type) %>%
+  summarise(
+    n_samples = n(),
+    mean_particles = round(mean(n_particles), 1),
+    sd_particles = round(sd(n_particles), 1),
+    mean_size = round(mean(mean_particle_area_um2), 2),
+    sd_size = round(sd(mean_particle_area_um2), 2),
+    .groups = "drop"
+  ) %>%
+  arrange(site, pm_type, desc(mean_particles))
+
+cat("\nTop 5 species by particle count (NBG, PM10):\n")
+species_summary %>% filter(site == "NBG", pm_type == "PM10") %>% head(5) %>% print()
+
+cat("\nTop 5 species by particle count (TCDBG, PM10):\n")
+species_summary %>% filter(site == "TCDBG", pm_type == "PM10") %>% head(5) %>% print()
+
+write_csv(species_summary, file.path(tables_dir, "species_summary.csv"))
+
+# ---------------------------
+# 2.4 Distribution plots
+# ---------------------------
+cat("\n--- 2.4 Generating distribution plots ---\n")
+
+# Plot A: Particle count distribution (log scale)
+p_count_dist <- combined_sample %>%
+  ggplot(aes(x = n_particles, fill = site)) +
+  geom_histogram(alpha = 0.6, bins = 30, position = "identity") +
+  scale_x_log10(labels = label_comma()) +
+  facet_wrap(~ pm_type, scales = "free_y") +
+  scale_fill_manual(values = pal_site) +
+  labs(
+    title = "Distribution of particle counts per sample",
+    x = "Number of particles per sample (log scale)",
+    y = "Count of samples",
+    fill = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_count_dist, "S01_particle_count_distribution.png", width = 10, height = 6)
+
+# Plot B: Particle size distribution
+p_size_dist <- combined_sample %>%
+  ggplot(aes(x = mean_particle_area_um2, fill = site)) +
+  geom_histogram(alpha = 0.6, bins = 30, position = "identity") +
+  facet_wrap(~ pm_type, scales = "free_y") +
+  scale_fill_manual(values = pal_site) +
+  labs(
+    title = "Distribution of mean particle size per sample",
+    x = expression("Mean particle area ("*mu*"m"^2*")"),
+    y = "Count of samples",
+    fill = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_size_dist, "S02_particle_size_distribution.png", width = 10, height = 6)
+
+# Plot C: Boxplot of particle counts by site and PM type
+p_count_box <- combined_sample %>%
+  ggplot(aes(x = site, y = n_particles, fill = site)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  facet_wrap(~ pm_type) +
+  scale_y_log10(labels = label_comma()) +
+  scale_fill_manual(values = pal_site, guide = "none") +
+  labs(
+    title = "Particle counts per sample by site and PM type",
+    x = NULL,
+    y = "Number of particles per sample (log scale)"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_count_box, "S03_particle_count_boxplot.png", width = 8, height = 5)
+
+# Plot D: Boxplot of particle sizes by site and PM type
+p_size_box <- combined_sample %>%
+  ggplot(aes(x = site, y = mean_particle_area_um2, fill = site)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  facet_wrap(~ pm_type) +
+  scale_fill_manual(values = pal_site, guide = "none") +
+  labs(
+    title = "Mean particle size per sample by site and PM type",
+    x = NULL,
+    y = expression("Mean particle area ("*mu*"m"^2*")")
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_size_box, "S04_particle_size_boxplot.png", width = 8, height = 5)
+
+# ---------------------------
+# 2.5 Statistical tests for site differences
+# ---------------------------
+cat("\n--- 2.5 Testing site differences (Mann-Whitney U) ---\n")
+
+site_test_results <- combined_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    # Particle count test
+    p_value_count = wilcox.test(n_particles ~ site)$p.value,
+    # Particle size test
+    p_value_size = wilcox.test(mean_particle_area_um2 ~ site)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    count_sig = ifelse(p_value_count < 0.05, "Significant", "Not significant"),
+    size_sig = ifelse(p_value_size < 0.05, "Significant", "Not significant")
+  )
+
+cat("\nSite comparison (NBG vs TCDBG):\n")
+print(site_test_results)
+
+write_csv(site_test_results, file.path(tables_dir, "site_comparison_tests.csv"))
+
+# ---------------------------
+# 2.6 Species richness and sampling effort
+# ---------------------------
+cat("\n--- 2.6 Sampling effort by species ---\n")
+
+sampling_effort <- combined_sample %>%
+  group_by(site, species) %>%
+  summarise(
+    n_samples = n(),
+    n_years = n_distinct(year),
+    years = paste(sort(unique(year)), collapse = ", "),
+    total_particles = sum(n_particles),
+    .groups = "drop"
+  ) %>%
+  arrange(site, desc(n_samples))
+
+cat("\nSpecies with most samples (NBG):\n")
+sampling_effort %>% filter(site == "NBG") %>% head(10) %>% print()
+
+cat("\nSpecies with most samples (TCDBG):\n")
+sampling_effort %>% filter(site == "TCDBG") %>% head(10) %>% print()
+
+write_csv(sampling_effort, file.path(tables_dir, "sampling_effort.csv"))
+
+# ---------------------------
+# 2.7 Correlation between particle count and size
+# ---------------------------
+cat("\n--- 2.7 Correlation between particle count and size ---\n")
+
+cor_test <- combined_sample %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    correlation = cor(n_particles, mean_particle_area_um2, method = "spearman"),
+    p_value = cor.test(n_particles, mean_particle_area_um2, method = "spearman")$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(significance = ifelse(p_value < 0.05, "Significant", "Not significant"))
+
+cat("\nSpearman correlation between particle count and size:\n")
+print(cor_test)
+
+write_csv(cor_test, file.path(tables_dir, "count_size_correlation.csv"))
+
+# Scatter plot
+p_corr <- combined_sample %>%
+  ggplot(aes(x = n_particles, y = mean_particle_area_um2, color = site)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_x_log10(labels = label_comma()) +
+  scale_y_log10() +
+  facet_wrap(~ pm_type) +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "Relationship between particle count and size",
+    x = "Particle count per sample (log scale)",
+    y = expression("Mean particle area ("*mu*"m"^2*", log scale)"),
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_corr, "S05_count_vs_size_correlation.png", width = 10, height = 6)
+
+cat("\n✅ Section 2 complete. Descriptive statistics and overview saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 3: SPECIES PERFORMANCE RANKING
+# ============================================================
+# This section ranks species by:
+#   - Mean particle count per sample (n_particles)
+#   - Mean particle size per sample (mean_particle_area_um2)
+# Includes plots, tables, and statistical tests of species differences.
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                  SECTION 3: SPECIES PERFORMANCE RANKING                       ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 3.1 Species-level summary (mean across samples)
+# ---------------------------
+cat("\n--- 3.1 Species-level summary ---\n")
+
+species_performance <- combined_sample %>%
+  group_by(site, pm_type, species) %>%
+  summarise(
+    n_samples = n(),
+    mean_particle_count = mean(n_particles, na.rm = TRUE),
+    se_particle_count = se(n_particles),
+    mean_particle_size = mean(mean_particle_area_um2, na.rm = TRUE),
+    se_particle_size = se(mean_particle_area_um2),
+    .groups = "drop"
+  ) %>%
+  arrange(site, pm_type, desc(mean_particle_count))
+
+cat("\nTop 10 species by mean particle count (TCDBG, PM10):\n")
+species_performance %>% filter(site == "TCDBG", pm_type == "PM10") %>% head(10) %>% print()
+
+cat("\nTop 10 species by mean particle count (NBG, PM10):\n")
+species_performance %>% filter(site == "NBG", pm_type == "PM10") %>% head(10) %>% print()
+
+write_csv(species_performance, file.path(tables_dir, "species_performance.csv"))
+
+# ---------------------------
+# 3.2 Statistical test for species differences (Kruskal-Wallis)
+# ---------------------------
+cat("\n--- 3.2 Testing for significant differences among species ---\n")
+
+species_kw <- combined_sample %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    n_species = n_distinct(species),
+    kw_particles_p = kruskal.test(n_particles ~ species)$p.value,
+    kw_size_p = kruskal.test(mean_particle_area_um2 ~ species)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    particles_sig = ifelse(kw_particles_p < 0.05, "Significant", "Not significant"),
+    size_sig = ifelse(kw_size_p < 0.05, "Significant", "Not significant")
+  )
+
+cat("\nKruskal-Wallis tests for species effects:\n")
+print(species_kw)
+
+write_csv(species_kw, file.path(tables_dir, "species_kruskal_wallis.csv"))
+
+# ---------------------------
+# 3.3 Ranking plots for particle count (top 10)
+# ---------------------------
+cat("\n--- 3.3 Generating ranking plots (particle count) ---\n")
+
+# Function to create ranking plot
+rank_count_plot <- function(df, site_sel, pm_sel) {
+  df_filtered <- df %>%
+    filter(site == site_sel, pm_type == pm_sel) %>%
+    slice_max(mean_particle_count, n = 10) %>%
+    mutate(species_pretty = pretty_species(species),
+           species_pretty = fct_reorder(species_pretty, mean_particle_count))
+  
+  ggplot(df_filtered, aes(x = mean_particle_count, y = species_pretty)) +
+    geom_col(aes(fill = mean_particle_count), alpha = 0.8, show.legend = FALSE) +
+    geom_errorbar(aes(xmin = mean_particle_count - se_particle_count,
+                      xmax = mean_particle_count + se_particle_count),
+                  width = 0.2, alpha = 0.7) +
+    scale_fill_viridis_c(option = "plasma") +
+    labs(
+      title = paste(site_sel, "-", pm_sel, ": Top 10 species by particle count"),
+      x = "Mean particles per sample (± SE)",
+      y = NULL
+    ) +
+    theme_wtp() +
+    theme(axis.text.y = element_text(face = "italic"))
+}
+
+# Generate plots for each combination
+sites <- c("TCDBG", "NBG")
+pm_types <- c("PM10", "PM2.5")
+
+for (s in sites) {
+  for (p in pm_types) {
+    p_rank_count <- rank_count_plot(species_performance, s, p)
+    save_plot_wtp(p_rank_count, paste0("F1_rank_count_", s, "_", p, ".png"), width = 8, height = 6)
+    print(p_rank_count)
+  }
+}
+
+# ---------------------------
+# 3.4 Ranking plots for particle size (top 10)
+# ---------------------------
+cat("\n--- 3.4 Generating ranking plots (particle size) ---\n")
+
+rank_size_plot <- function(df, site_sel, pm_sel) {
+  df_filtered <- df %>%
+    filter(site == site_sel, pm_type == pm_sel) %>%
+    slice_max(mean_particle_size, n = 10) %>%
+    mutate(species_pretty = pretty_species(species),
+           species_pretty = fct_reorder(species_pretty, mean_particle_size))
+  
+  ggplot(df_filtered, aes(x = mean_particle_size, y = species_pretty)) +
+    geom_col(aes(fill = mean_particle_size), alpha = 0.8, show.legend = FALSE) +
+    geom_errorbar(aes(xmin = mean_particle_size - se_particle_size,
+                      xmax = mean_particle_size + se_particle_size),
+                  width = 0.2, alpha = 0.7) +
+    scale_fill_viridis_c(option = "magma") +
+    labs(
+      title = paste(site_sel, "-", pm_sel, ": Top 10 species by particle size"),
+      x = expression("Mean particle area ("*mu*"m"^2*" ± SE)"),
+      y = NULL
+    ) +
+    theme_wtp() +
+    theme(axis.text.y = element_text(face = "italic"))
+}
+
+for (s in sites) {
+  for (p in pm_types) {
+    p_rank_size <- rank_size_plot(species_performance, s, p)
+    save_plot_wtp(p_rank_size, paste0("F2_rank_size_", s, "_", p, ".png"), width = 8, height = 6)
+    print(p_rank_size)
+  }
+}
+
+# ---------------------------
+# 3.5 Species-level comparison: count vs size (bubble plot)
+# ---------------------------
+cat("\n--- 3.5 Species comparison: count vs size ---\n")
+
+p_count_vs_size <- species_performance %>%
+  filter(n_samples >= 3) %>%
+  ggplot(aes(x = mean_particle_count, y = mean_particle_size, 
+             color = site, size = n_samples)) +
+  geom_point(alpha = 0.7) +
+  geom_text_repel(aes(label = pretty_species(species)), size = 2.5, max.overlaps = 15) +
+  scale_x_log10(labels = label_comma()) +
+  scale_y_log10() +
+  scale_color_manual(values = pal_site) +
+  scale_size_continuous(range = c(2, 8), name = "n samples") +
+  facet_wrap(~ pm_type) +
+  labs(
+    title = "Species performance: particle count vs particle size",
+    x = "Mean particle count per sample (log scale)",
+    y = expression("Mean particle area ("*mu*"m"^2*", log scale)"),
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_count_vs_size, "F3_count_vs_size_species.png", width = 12, height = 8)
+print(p_count_vs_size)
+
+# ---------------------------
+# 3.6 Consistency across years (only species with multiple years)
+# ---------------------------
+cat("\n--- 3.6 Species consistency across years ---\n")
+
+species_consistency <- combined_sample %>%
+  group_by(site, species, pm_type) %>%
+  filter(n_distinct(year) >= 2) %>%
+  summarise(
+    n_years = n_distinct(year),
+    cv_particles = sd(n_particles) / mean(n_particles),
+    cv_size = sd(mean_particle_area_um2) / mean(mean_particle_area_um2),
+    .groups = "drop"
+  ) %>%
+  arrange(cv_particles)
+
+cat("\nMost consistent species (lowest CV in particle count):\n")
+species_consistency %>% slice_min(cv_particles, n = 10) %>% print()
+
+write_csv(species_consistency, file.path(tables_dir, "species_consistency.csv"))
+
+cat("\n✅ Section 3 complete. Species ranking saved.\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 4: TRAIT ANALYSES (H1, H2, H4)
+# ============================================================
+# Tests whether traits affect:
+#   - Particle count (n_particles) – "how much PM"
+#   - Particle size (mean_particle_area_um2) – "how large PM"
+# Traits: evergreen, trichomes, surface_texture, leaf_size_class
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                         SECTION 4: TRAIT ANALYSES                              ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 4.1 Helper functions for trait tests
+# ---------------------------
+test_binary_trait <- function(df, trait_col, outcome_col, outcome_name) {
+  df %>%
+    filter(!is.na(.data[[trait_col]])) %>%
+    group_by(site, pm_type) %>%
+    summarise(
+      n1 = sum(.data[[trait_col]] == levels(factor(.data[[trait_col]]))[1]),
+      n2 = sum(.data[[trait_col]] == levels(factor(.data[[trait_col]]))[2]),
+      mean1 = mean(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[1]], na.rm = TRUE),
+      mean2 = mean(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[2]], na.rm = TRUE),
+      p_value = wilcox.test(.data[[outcome_col]] ~ .data[[trait_col]])$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      trait = trait_col,
+      outcome = outcome_name,
+      significant = ifelse(p_value < 0.05, "Yes", "No")
+    )
+}
+
+test_multiclass_trait <- function(df, trait_col, outcome_col, outcome_name) {
+  df %>%
+    filter(!is.na(.data[[trait_col]])) %>%
+    group_by(site, pm_type) %>%
+    summarise(
+      p_value = kruskal.test(.data[[outcome_col]] ~ .data[[trait_col]])$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      trait = trait_col,
+      outcome = outcome_name,
+      significant = ifelse(p_value < 0.05, "Yes", "No")
+    )
+}
+
+# ---------------------------
+# 4.2 Evergreen vs Deciduous (H2)
+# ---------------------------
+cat("\n--- 4.2 Evergreen vs Deciduous ---\n")
+
+# For particle count
+evergreen_count <- test_binary_trait(combined_sample, "evergreen", "n_particles", "Particle count")
+cat("\nEvergreen effect on particle count:\n")
+print(evergreen_count)
+
+# For particle size
+evergreen_size <- test_binary_trait(combined_sample, "evergreen", "mean_particle_area_um2", "Particle size")
+cat("\nEvergreen effect on particle size:\n")
+print(evergreen_size)
+
+# Combine
+evergreen_results <- bind_rows(evergreen_count, evergreen_size)
+write_csv(evergreen_results, file.path(tables_dir, "trait_evergreen.csv"))
+
+# ---------------------------
+# 4.3 Trichomes (H1)
+# ---------------------------
+cat("\n--- 4.3 Trichomes effect ---\n")
+
+trichomes_count <- test_binary_trait(combined_sample, "trichomes", "n_particles", "Particle count")
+trichomes_size <- test_binary_trait(combined_sample, "trichomes", "mean_particle_area_um2", "Particle size")
+trichomes_results <- bind_rows(trichomes_count, trichomes_size)
+write_csv(trichomes_results, file.path(tables_dir, "trait_trichomes.csv"))
+
+cat("\nTrichomes effect on particle count:\n")
+print(trichomes_count)
+
+# ---------------------------
+# 4.4 Surface texture (H1)
+# ---------------------------
+cat("\n--- 4.4 Surface texture effect ---\n")
+
+texture_count <- test_multiclass_trait(combined_sample, "surface_texture", "n_particles", "Particle count")
+texture_size <- test_multiclass_trait(combined_sample, "surface_texture", "mean_particle_area_um2", "Particle size")
+texture_results <- bind_rows(texture_count, texture_size)
+write_csv(texture_results, file.path(tables_dir, "trait_surface_texture.csv"))
+
+cat("\nSurface texture effect (Kruskal-Wallis p-values):\n")
+print(texture_results)
+
+# ---------------------------
+# 4.5 Leaf size class (H4 - expected no strong effect)
+# ---------------------------
+cat("\n--- 4.5 Leaf size class effect ---\n")
+
+leafsize_count <- test_multiclass_trait(combined_sample, "leaf_size_class", "n_particles", "Particle count")
+leafsize_size <- test_multiclass_trait(combined_sample, "leaf_size_class", "mean_particle_area_um2", "Particle size")
+leafsize_results <- bind_rows(leafsize_count, leafsize_size)
+write_csv(leafsize_results, file.path(tables_dir, "trait_leaf_size.csv"))
+
+cat("\nLeaf size class effect (Kruskal-Wallis p-values):\n")
+print(leafsize_results)
+
+# Leaf size class effect on particle count - boxplot
+p_leafsize_count <- combined_sample %>%
+  filter(!is.na(leaf_size_class)) %>%
+  mutate(leaf_size_class = factor(leaf_size_class, 
+                                   levels = c("nano", "micro", "noto", "meso"))) %>%
+  ggplot(aes(x = leaf_size_class, y = n_particles, fill = leaf_size_class)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+  facet_grid(site ~ pm_type) +
+  scale_fill_viridis_d(option = "D", guide = "none") +
+  scale_y_log10() +
+  labs(
+    title = "Leaf size class effect on particle count",
+    x = "Leaf size class (Ellis et al., 2009)",
+    y = "Particles per sample (log scale)"
+  ) +
+  theme_wtp() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+save_plot_wtp(p_leafsize_count, "F_leafsize_count.png", width = 10, height = 8)
+
+# ---------------------------
+# 4.6 Visualisation: trait effects (boxplots)
+# ---------------------------
+cat("\n--- 4.6 Generating trait effect boxplots ---\n")
+
+# Boxplot function for binary traits
+plot_binary_trait <- function(df, trait_col, outcome_col, outcome_label, palette) {
+  df %>%
+    filter(!is.na(.data[[trait_col]])) %>%
+    ggplot(aes(x = .data[[trait_col]], y = .data[[outcome_col]], fill = .data[[trait_col]])) +
+    geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+    facet_grid(site ~ pm_type) +
+    scale_fill_manual(values = palette, guide = "none") +
+    scale_y_log10() +
+    labs(
+      title = paste(str_to_title(trait_col), "effect on", outcome_label),
+      x = NULL,
+      y = ifelse(outcome_label == "Particle count", "Particles per sample (log scale)", 
+                 expression("Mean particle area ("*mu*"m"^2*", log scale)"))
+    ) +
+    theme_wtp()
+}
+
+# Evergreen plots
+p_evergreen_count <- plot_binary_trait(combined_sample, "evergreen", "n_particles", "Particle count", pal_evergreen)
+p_evergreen_size <- plot_binary_trait(combined_sample, "evergreen", "mean_particle_area_um2", "Particle size", pal_evergreen)
+save_plot_wtp(p_evergreen_count, "F4_evergreen_count.png", width = 8, height = 6)
+save_plot_wtp(p_evergreen_size, "F5_evergreen_size.png", width = 8, height = 6)
+
+# Trichomes plots
+p_trichomes_count <- plot_binary_trait(combined_sample, "trichomes", "n_particles", "Particle count", pal_trichomes)
+p_trichomes_size <- plot_binary_trait(combined_sample, "trichomes", "mean_particle_area_um2", "Particle size", pal_trichomes)
+save_plot_wtp(p_trichomes_count, "F6_trichomes_count.png", width = 8, height = 6)
+save_plot_wtp(p_trichomes_size, "F7_trichomes_size.png", width = 8, height = 6)
+
+# Surface texture boxplot (multi-class)
+plot_multi_trait <- function(df, trait_col, outcome_col, outcome_label) {
+  df %>%
+    filter(!is.na(.data[[trait_col]])) %>%
+    ggplot(aes(x = .data[[trait_col]], y = .data[[outcome_col]], fill = .data[[trait_col]])) +
+    geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+    facet_grid(site ~ pm_type) +
+    scale_fill_viridis_d(option = "D", guide = "none") +
+    scale_y_log10() +
+    labs(
+      title = paste(str_to_title(gsub("_", " ", trait_col)), "effect on", outcome_label),
+      x = NULL,
+      y = ifelse(outcome_label == "Particle count", "Particles per sample (log scale)",
+                 expression("Mean particle area ("*mu*"m"^2*", log scale)"))
+    ) +
+    theme_wtp() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+p_texture_count <- plot_multi_trait(combined_sample, "surface_texture", "n_particles", "Particle count")
+p_texture_size <- plot_multi_trait(combined_sample, "surface_texture", "mean_particle_area_um2", "Particle size")
+save_plot_wtp(p_texture_count, "F8_texture_count.png", width = 8, height = 6)
+save_plot_wtp(p_texture_size, "F9_texture_size.png", width = 8, height = 6)
+
+cat("\n✅ Section 4 complete. Trait analyses saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 5: LEAF ANGLE vs PARTICLE SIZE (H3)
+# ============================================================
+# Primary hypothesis: steeper leaf angles → larger particles
+# Analysis: correlation, regression, quartile comparison
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 5: LEAF ANGLE vs PARTICLE SIZE (H3)                      ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 5.1 Sample-level correlation
+# ---------------------------
+cat("\n--- 5.1 Sample-level correlation (Spearman) ---\n")
+
+angle_corr_sample <- combined_sample %>%
+  filter(!is.na(mean_angle), !is.na(mean_particle_area_um2)) %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    n = n(),
+    spearman_r = cor(mean_angle, mean_particle_area_um2, method = "spearman"),
+    p_value = cor.test(mean_angle, mean_particle_area_um2, method = "spearman")$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    significant = ifelse(p_value < 0.05, "Yes", "No"),
+    direction = ifelse(spearman_r > 0, "Positive (steeper → larger)", "Negative (steeper → smaller)")
+  )
+
+cat("\nLeaf angle vs particle size correlation (sample-level):\n")
+print(angle_corr_sample)
+
+write_csv(angle_corr_sample, file.path(tables_dir, "leaf_angle_correlation_sample.csv"))
+
+# ---------------------------
+# 5.2 Species-level correlation (aggregated to avoid pseudoreplication)
+# ---------------------------
+cat("\n--- 5.2 Species-level correlation ---\n")
+
+species_angle <- combined_sample %>%
+  filter(!is.na(mean_angle), !is.na(mean_particle_area_um2)) %>%
+  group_by(site, pm_type, species, mean_angle) %>%
+  summarise(
+    mean_particle_size = mean(mean_particle_area_um2),
+    n_samples = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_samples >= 2)
+
+angle_corr_species <- species_angle %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    n_species = n(),
+    spearman_r = cor(mean_angle, mean_particle_size, method = "spearman"),
+    p_value = cor.test(mean_angle, mean_particle_size, method = "spearman")$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+cat("\nLeaf angle vs particle size correlation (species-level):\n")
+print(angle_corr_species)
+
+write_csv(angle_corr_species, file.path(tables_dir, "leaf_angle_correlation_species.csv"))
+
+# ---------------------------
+# 5.3 Linear regression (species-level)
+# ---------------------------
+cat("\n--- 5.3 Linear regression (species-level) ---\n")
+
+regression_results <- species_angle %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    slope = coef(lm(mean_particle_size ~ mean_angle))[2],
+    r_squared = summary(lm(mean_particle_size ~ mean_angle))$r.squared,
+    p_value = summary(lm(mean_particle_size ~ mean_angle))$coefficients[2, 4],
+    .groups = "drop"
+  )
+
+cat("\nRegression results (particle size ~ leaf angle):\n")
+print(regression_results)
+
+write_csv(regression_results, file.path(tables_dir, "leaf_angle_regression.csv"))
+
+# ---------------------------
+# 5.4 Leaf angle quartile analysis
+# ---------------------------
+cat("\n--- 5.4 Leaf angle quartile analysis ---\n")
+
+angle_quartile <- combined_sample %>%
+  filter(!is.na(mean_angle), !is.na(mean_particle_area_um2)) %>%
+  mutate(
+    angle_quartile = ntile(mean_angle, 4),
+    angle_group = case_when(
+      angle_quartile == 1 ~ "Q1 (shallowest)",
+      angle_quartile == 2 ~ "Q2",
+      angle_quartile == 3 ~ "Q3",
+      angle_quartile == 4 ~ "Q4 (steepest)"
+    )
+  ) %>%
+  group_by(site, pm_type, angle_group) %>%
+  summarise(
+    mean_particle_size = mean(mean_particle_area_um2),
+    se_particle_size = se(mean_particle_area_um2),
+    n = n(),
+    .groups = "drop"
+  )
+
+cat("\nParticle size by leaf angle quartile:\n")
+print(angle_quartile)
+
+write_csv(angle_quartile, file.path(tables_dir, "leaf_angle_quartile.csv"))
+
+# Combined leaf angle correlations - both count and size
+angle_corr_count <- combined_sample %>%
+  filter(!is.na(mean_angle), !is.na(n_particles)) %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    n = n(),
+    spearman_r = round(cor(mean_angle, n_particles, method = "spearman"), 3),
+    p_value = round(cor.test(mean_angle, n_particles, method = "spearman")$p.value, 4),
+    .groups = "drop"
+  ) %>%
+  mutate(outcome = "Particle count",
+         significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+angle_corr_size <- combined_sample %>%
+  filter(!is.na(mean_angle), !is.na(mean_particle_area_um2)) %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    n = n(),
+    spearman_r = round(cor(mean_angle, mean_particle_area_um2, method = "spearman"), 3),
+    p_value = round(cor.test(mean_angle, mean_particle_area_um2, method = "spearman")$p.value, 4),
+    .groups = "drop"
+  ) %>%
+  mutate(outcome = "Particle size",
+         significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+angle_corr_combined <- bind_rows(angle_corr_count, angle_corr_size) %>%
+  arrange(outcome, site, pm_type)
+
+print(angle_corr_combined, width = Inf)
+write_csv(angle_corr_combined, file.path(tables_dir, "leaf_angle_correlations_combined.csv"))
+
+# ---------------------------
+# 5.5 Scatter plots with regression lines
+# ---------------------------
+p_angle_both <- combined_sample %>%
+  filter(!is.na(mean_angle)) %>%
+  pivot_longer(cols = c(n_particles, mean_particle_area_um2),
+               names_to = "outcome",
+               values_to = "value") %>%
+  mutate(outcome_label = ifelse(outcome == "n_particles",
+                                "Particle count", 
+                                "Mean particle size (µm²)")) %>%
+  ggplot(aes(x = mean_angle, y = value, color = site)) +
+  geom_point(alpha = 0.4, size = 1.5) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  facet_grid(outcome_label ~ pm_type, scales = "free_y") +
+  scale_color_manual(values = pal_site) +
+  scale_y_log10() +
+  labs(
+    title = "Leaf angle vs particle count and particle size",
+    x = "Mean leaf angle (degrees)",
+    y = "Outcome (log scale)",
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_angle_both, "F10_leaf_angle_both_outcomes.png", width = 12, height = 8)
+print(p_angle_scatter)
+
+# Quartile bar plot
+p_angle_quartile <- angle_quartile %>%
+  ggplot(aes(x = angle_group, y = mean_particle_size, fill = site)) +
+  geom_col(position = position_dodge(0.8), alpha = 0.8) +
+  geom_errorbar(aes(ymin = mean_particle_size - se_particle_size,
+                    ymax = mean_particle_size + se_particle_size),
+                position = position_dodge(0.8), width = 0.25) +
+  facet_wrap(~ pm_type) +
+  scale_fill_manual(values = pal_site) +
+  labs(
+    title = "Particle size by leaf angle quartile",
+    x = "Leaf angle quartile",
+    y = expression("Mean particle area ("*mu*"m"^2*")"),
+    fill = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_angle_quartile, "F11_leaf_angle_quartile.png", width = 10, height = 6)
+print(p_angle_quartile)
+
+
+
+
+
+
+cat("\n✅ Section 5 complete. Leaf angle analyses saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 6: YEAR-TO-YEAR VARIABILITY AND STABILITY
+# ============================================================
+# Assesses which species are consistent across years in:
+#   - Particle count
+#   - Particle size
+# Uses coefficient of variation (CV)
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 6: YEAR-TO-YEAR VARIABILITY AND STABILITY                 ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 6.1 Species stability (CV) for particle count
+# ---------------------------
+cat("\n--- 6.1 Species stability for particle count ---\n")
+
+stability_count <- combined_sample %>%
+  group_by(site, species, pm_type) %>%
+  filter(n_distinct(year) >= 2) %>%
+  summarise(
+    n_years = n_distinct(year),
+    mean_count = mean(n_particles),
+    sd_count = sd(n_particles),
+    cv_count = sd_count / mean_count,
+    .groups = "drop"
+  ) %>%
+  arrange(cv_count)
+
+cat("\nMost stable species (lowest CV) for particle count:\n")
+stability_count %>% slice_min(cv_count, n = 10) %>% print()
+
+cat("\nLeast stable species (highest CV) for particle count:\n")
+stability_count %>% slice_max(cv_count, n = 10) %>% print()
+
+write_csv(stability_count, file.path(tables_dir, "stability_particle_count.csv"))
+
+# ---------------------------
+# 6.2 Species stability (CV) for particle size
+# ---------------------------
+cat("\n--- 6.2 Species stability for particle size ---\n")
+
+stability_size <- combined_sample %>%
+  group_by(site, species, pm_type) %>%
+  filter(n_distinct(year) >= 2) %>%
+  summarise(
+    n_years = n_distinct(year),
+    mean_size = mean(mean_particle_area_um2),
+    sd_size = sd(mean_particle_area_um2),
+    cv_size = sd_size / mean_size,
+    .groups = "drop"
+  ) %>%
+  arrange(cv_size)
+
+cat("\nMost stable species (lowest CV) for particle size:\n")
+stability_size %>% slice_min(cv_size, n = 10) %>% print()
+
+cat("\nLeast stable species (highest CV) for particle size:\n")
+stability_size %>% slice_max(cv_size, n = 10) %>% print()
+
+write_csv(stability_size, file.path(tables_dir, "stability_particle_size.csv"))
+
+# ---------------------------
+# 6.3 Year trends: mean particle count over time
+# ---------------------------
+cat("\n--- 6.3 Yearly trends in particle count ---\n")
+
+year_trend_count <- combined_sample %>%
+  group_by(site, year, pm_type) %>%
+  summarise(
+    mean_count = mean(n_particles),
+    se_count = se(n_particles),
+    .groups = "drop"
+  )
+
+p_trend_count <- year_trend_count %>%
+  ggplot(aes(x = year, y = mean_count, color = site)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_errorbar(aes(ymin = mean_count - se_count, ymax = mean_count + se_count), width = 0.5) +
+  facet_wrap(~ pm_type) +
+  scale_color_manual(values = pal_site) +
+  scale_y_log10(labels = label_comma()) +
+  labs(
+    title = "Yearly trends in mean particle count per sample",
+    x = "Year",
+    y = "Mean particle count (log scale)",
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_trend_count, "F12_year_trend_count.png", width = 10, height = 6)
+print(p_trend_count)
+
+# ---------------------------
+# 6.4 Year trends: mean particle size over time
+# ---------------------------
+cat("\n--- 6.4 Yearly trends in particle size ---\n")
+
+year_trend_size <- combined_sample %>%
+  group_by(site, year, pm_type) %>%
+  summarise(
+    mean_size = mean(mean_particle_area_um2),
+    se_size = se(mean_particle_area_um2),
+    .groups = "drop"
+  )
+
+p_trend_size <- year_trend_size %>%
+  ggplot(aes(x = year, y = mean_size, color = site)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_errorbar(aes(ymin = mean_size - se_size, ymax = mean_size + se_size), width = 0.5) +
+  facet_wrap(~ pm_type) +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "Yearly trends in mean particle size per sample",
+    x = "Year",
+    y = expression("Mean particle area ("*mu*"m"^2*")"),
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_trend_size, "F13_year_trend_size.png", width = 10, height = 6)
+print(p_trend_size)
+
+# ---------------------------
+# 6.5 Species-specific trajectories (example: top 6 species by count)
+# ---------------------------
+cat("\n--- 6.5 Species-specific trajectories (top species) ---\n")
+
+# Select top species by overall mean count for each site
+top_species <- species_performance %>%
+  filter(pm_type == "PM10") %>%
+  group_by(site) %>%
+  slice_max(mean_particle_count, n = 6) %>%
+  pull(species) %>% unique()
+
+traj_data <- combined_sample %>%
+  filter(species %in% top_species, pm_type == "PM10") %>%
+  group_by(site, species, year) %>%
+  summarise(
+    mean_count = mean(n_particles),
+    se_count = se(n_particles),
+    .groups = "drop"
+  )
+
+p_trajectories <- traj_data %>%
+  ggplot(aes(x = year, y = mean_count, color = site)) +
+  geom_point(size = 2) +
+  geom_line(linewidth = 0.8) +
+  geom_errorbar(aes(ymin = mean_count - se_count, ymax = mean_count + se_count), width = 0.3) +
+  facet_wrap(~ species, scales = "free_y") +
+  scale_color_manual(values = pal_site) +
+  scale_y_log10() +
+  labs(
+    title = "Year-to-year trajectories for top species (PM10)",
+    x = "Year",
+    y = "Mean particle count per sample (log scale)",
+    color = "Site"
+  ) +
+  theme_wtp() +
+  theme(strip.text = element_text(face = "italic"))
+
+save_plot_wtp(p_trajectories, "F14_species_trajectories.png", width = 12, height = 8)
+print(p_trajectories)
+
+cat("\n✅ Section 6 complete. Stability and trends saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 7: PM2.5:PM10 RATIOS (H5) - FIXED
+# ============================================================
+# Compares PM2.5 to PM10 for:
+#   - Particle count ratio
+#   - Particle size ratio
+# Identifies species with high PM2.5 selectivity
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                  SECTION 7: PM2.5:PM10 RATIOS (H5)                            ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 7.1 Aggregate per species-year-site-pm_type first
+# ---------------------------
+cat("\n--- 7.1 Aggregating per species-year-site-PM type ---\n")
+
+# Average particle count and size for each species-year-site-PM type
+agg_pm <- combined_sample %>%
+  group_by(site, year, species, pm_type) %>%
+  summarise(
+    mean_count = mean(n_particles, na.rm = TRUE),
+    mean_size = mean(mean_particle_area_um2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Now pivot to get PM10 and PM2.5 columns
+ratio_data <- agg_pm %>%
+  pivot_wider(
+    id_cols = c(site, year, species),
+    names_from = pm_type,
+    values_from = c(mean_count, mean_size),
+    names_sep = "_"
+  ) %>%
+  filter(!is.na(mean_count_PM10), !is.na(mean_count_PM2.5),
+         !is.na(mean_size_PM10), !is.na(mean_size_PM2.5)) %>%
+  mutate(
+    count_ratio = mean_count_PM2.5 / mean_count_PM10,
+    size_ratio = mean_size_PM2.5 / mean_size_PM10
+  )
+
+cat("Number of species-year-site combinations with both PM fractions:", nrow(ratio_data), "\n")
+
+# ---------------------------
+# 7.2 Summary of ratios by site and year
+# ---------------------------
+cat("\n--- 7.2 Summary of ratios ---\n")
+
+ratio_summary <- ratio_data %>%
+  group_by(site, year) %>%
+  summarise(
+    mean_count_ratio = mean(count_ratio, na.rm = TRUE),
+    se_count_ratio = se(count_ratio),
+    mean_size_ratio = mean(size_ratio, na.rm = TRUE),
+    se_size_ratio = se(size_ratio),
+    n_species = n(),
+    .groups = "drop"
+  )
+
+cat("\nRatio summary by site and year:\n")
+print(ratio_summary)
+
+write_csv(ratio_summary, file.path(tables_dir, "pm_ratios_summary.csv"))
+
+# ---------------------------
+# 7.3 Species with highest PM2.5 selectivity (count ratio > 0.7)
+# ---------------------------
+cat("\n--- 7.3 Species with high PM2.5 selectivity (count ratio > 0.7) ---\n")
+
+high_selectivity <- ratio_data %>%
+  filter(count_ratio > 0.7) %>%
+  arrange(desc(count_ratio)) %>%
+  select(site, year, species, count_ratio, size_ratio)
+
+cat("\nSpecies with count ratio > 0.7 (more PM2.5 than PM10 by count):\n")
+print(high_selectivity)
+
+write_csv(high_selectivity, file.path(tables_dir, "high_pm25_selectivity.csv"))
+
+# ---------------------------
+# 7.4 Visualisation: count ratio by species
+# ---------------------------
+cat("\n--- 7.4 Generating ratio plots ---\n")
+
+p_count_ratio <- ratio_data %>%
+  mutate(species_pretty = pretty_species(species)) %>%
+  ggplot(aes(x = reorder(species_pretty, count_ratio), y = count_ratio, color = site)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", alpha = 0.7) +
+  geom_hline(yintercept = 1, linetype = "dotted", color = "darkred", alpha = 0.5) +
+  coord_flip() +
+  facet_wrap(~ year, scales = "free_y") +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "PM2.5:PM10 particle count ratio by species and year",
+    x = NULL,
+    y = "PM2.5 count / PM10 count",
+    color = "Site",
+    caption = "Red dashed line = 0.5 (balanced), dotted line = 1 (equal)"
+  ) +
+  theme_wtp() +
+  theme(axis.text.y = element_text(face = "italic", size = 8))
+
+save_plot_wtp(p_count_ratio, "F15_pm_count_ratio.png", width = 12, height = 10)
+print(p_count_ratio)
+
+# Size ratio plot
+p_size_ratio <- ratio_data %>%
+  mutate(species_pretty = pretty_species(species)) %>%
+  ggplot(aes(x = reorder(species_pretty, size_ratio), y = size_ratio, color = site)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", alpha = 0.7) +
+  coord_flip() +
+  facet_wrap(~ year, scales = "free_y") +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "PM2.5:PM10 particle size ratio by species and year",
+    x = NULL,
+    y = "PM2.5 mean size / PM10 mean size",
+    color = "Site"
+  ) +
+  theme_wtp() +
+  theme(axis.text.y = element_text(face = "italic", size = 8))
+
+save_plot_wtp(p_size_ratio, "F16_pm_size_ratio.png", width = 12, height = 10)
+print(p_size_ratio)
+
+# ---------------------------
+# 7.5 Statistical test for site differences in ratios (fixed)
+# ---------------------------
+cat("\n--- 7.5 Site differences in ratios ---\n")
+
+# Get years where both sites have data
+years_with_both <- ratio_data %>%
+  group_by(year) %>%
+  summarise(n_sites = n_distinct(site), .groups = "drop") %>%
+  filter(n_sites == 2) %>%
+  pull(year)
+
+if (length(years_with_both) > 0) {
+  ratio_site_test <- ratio_data %>%
+    filter(year %in% years_with_both) %>%
+    group_by(year) %>%
+    summarise(
+      count_p = wilcox.test(count_ratio ~ site)$p.value,
+      size_p = wilcox.test(size_ratio ~ site)$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      count_sig = ifelse(count_p < 0.05, "Significant", "Not significant"),
+      size_sig = ifelse(size_p < 0.05, "Significant", "Not significant")
+    )
+  
+  cat("\nSite comparison of ratios (years with both sites):\n")
+  print(ratio_site_test)
+  write_csv(ratio_site_test, file.path(tables_dir, "ratio_site_tests.csv"))
+} else {
+  cat("\nNo years with data from both sites for ratio comparison.\n")
+}
+```
+
+
+```{r}
+# ============================================================
+# SECTION 8: MULTIVARIATE ANALYSIS (MIXED MODELS)
+# ============================================================
+# Tests H1-H6 using linear mixed models:
+#   - Outcome 1: log(n_particles) (particle count)
+#   - Outcome 2: log(mean_particle_area_um2) (particle size)
+# Fixed effects: pm_type, site, evergreen, trichomes, surface_texture, mean_angle
+# Random intercept: species
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                 SECTION 8: MULTIVARIATE ANALYSIS (MIXED MODELS)                ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 8.1 Prepare model data
+# ---------------------------
+cat("\n--- 8.1 Preparing model data ---\n")
+
+model_data <- combined_sample %>%
+  filter(
+    !is.na(evergreen), !is.na(trichomes), !is.na(surface_texture),
+    !is.na(mean_angle), !is.na(leaf_size_class)
+  ) %>%
+  mutate(
+    log_count = log(n_particles + 1),
+    log_size = log(mean_particle_area_um2 + 1),
+    evergreen_bin = ifelse(evergreen == "Evergreen", 1, 0),
+    trichomes_bin = ifelse(trichomes == "Yes", 1, 0),
+    mean_angle_scaled = scale(mean_angle),
+    pm_type = factor(pm_type),
+    site = factor(site),
+    surface_texture = factor(surface_texture),
+    leaf_size_class = factor(leaf_size_class)
+  )
+
+cat("Complete cases for models:", nrow(model_data), "\n")
+cat("Number of species:", n_distinct(model_data$species), "\n")
+
+# ---------------------------
+# 8.2 Model A: Particle count (log_count)
+# ---------------------------
+cat("\n--- 8.2 Model A: Particle count (log_count) ---\n")
+
+# Full model
+model_count_full <- lmer(log_count ~ pm_type + site + evergreen + trichomes + 
+                           surface_texture + mean_angle_scaled + leaf_size_class +
+                           (1 | species), 
+                         data = model_data, REML = FALSE,
+                         control = lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+
+# Null model (species only)
+model_count_null <- lmer(log_count ~ 1 + (1 | species), data = model_data, REML = FALSE)
+
+# Summary
+cat("\nModel A summary (particle count):\n")
+print(summary(model_count_full))
+
+# Likelihood ratio test for species random effect
+lrt_count <- anova(model_count_null, model_count_full, test = "Chisq")
+cat("\nLikelihood ratio test (species random effect):\n")
+print(lrt_count)
+
+# Extract fixed effects
+count_fixed <- broom.mixed::tidy(model_count_full, effects = "fixed") %>%
+  mutate(significant = ifelse(p.value < 0.05, "Yes", "No"))
+
+write_csv(count_fixed, file.path(tables_dir, "model_count_coefficients.csv"))
+
+# ---------------------------
+# 8.3 Model B: Particle size (log_size)
+# ---------------------------
+cat("\n--- 8.3 Model B: Particle size (log_size) ---\n")
+
+model_size_full <- lmer(log_size ~ pm_type + site + evergreen + trichomes + 
+                          surface_texture + mean_angle_scaled + leaf_size_class +
+                          (1 | species), 
+                        data = model_data, REML = FALSE,
+                        control = lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+
+model_size_null <- lmer(log_size ~ 1 + (1 | species), data = model_data, REML = FALSE)
+
+cat("\nModel B summary (particle size):\n")
+print(summary(model_size_full))
+
+lrt_size <- anova(model_size_null, model_size_full, test = "Chisq")
+cat("\nLikelihood ratio test (species random effect):\n")
+print(lrt_size)
+
+size_fixed <- broom.mixed::tidy(model_size_full, effects = "fixed") %>%
+  mutate(significant = ifelse(p.value < 0.05, "Yes", "No"))
+
+write_csv(size_fixed, file.path(tables_dir, "model_size_coefficients.csv"))
+
+# ---------------------------
+# 8.4 Variance partitioning (H6)
+# ---------------------------
+cat("\n--- 8.4 Variance partitioning (species identity) ---\n")
+
+# Extract variance components
+var_count <- as.data.frame(VarCorr(model_count_full))
+var_size <- as.data.frame(VarCorr(model_size_full))
+
+total_var_count <- sum(var_count$vcov)
+species_var_count <- var_count$vcov[1]
+residual_var_count <- var_count$vcov[2]
+
+total_var_size <- sum(var_size$vcov)
+species_var_size <- var_size$vcov[1]
+residual_var_size <- var_size$vcov[2]
+
+cat("\nParticle count model:\n")
+cat("  Species explains", round(species_var_count / total_var_count * 100, 1), "% of variance\n")
+cat("  Residual variance:", round(residual_var_count / total_var_count * 100, 1), "%\n")
+
+cat("\nParticle size model:\n")
+cat("  Species explains", round(species_var_size / total_var_size * 100, 1), "% of variance\n")
+cat("  Residual variance:", round(residual_var_size / total_var_size * 100, 1), "%\n")
+
+variance_partitioning <- data.frame(
+  Outcome = c("Particle count", "Particle size"),
+  Species_variance_pct = c(round(species_var_count / total_var_count * 100, 1),
+                           round(species_var_size / total_var_size * 100, 1)),
+  Residual_variance_pct = c(round(residual_var_count / total_var_count * 100, 1),
+                            round(residual_var_size / total_var_size * 100, 1))
+)
+write_csv(variance_partitioning, file.path(tables_dir, "variance_partitioning.csv"))
+
+# ---------------------------
+# 8.5 Model diagnostics
+# ---------------------------
+cat("\n--- 8.5 Model diagnostics ---\n")
+
+# Check residuals
+residuals_count <- residuals(model_count_full)
+residuals_size <- residuals(model_size_full)
+
+# QQ plots
+png(file.path(figures_dir, "model_diagnostics.png"), width = 10, height = 5, units = "in", res = 300)
+par(mfrow = c(1, 2))
+qqnorm(residuals_count, main = "Particle count model residuals")
+qqline(residuals_count, col = "red")
+qqnorm(residuals_size, main = "Particle size model residuals")
+qqline(residuals_size, col = "red")
+dev.off()
+cat("  Saved model diagnostics plot\n")
+
+# ---------------------------
+# 8.6 Coefficient forest plots
+# ---------------------------
+cat("\n--- 8.6 Coefficient forest plots ---\n")
+
+# Forest plot function
+forest_plot <- function(tidy_df, title) {
+  tidy_df %>%
+    filter(term != "(Intercept)") %>%
+    mutate(term = str_replace_all(term, "_", " ") %>% str_to_sentence()) %>%
+    ggplot(aes(x = estimate, y = reorder(term, estimate), 
+               xmin = estimate - std.error, xmax = estimate + std.error)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_point(size = 3, color = "steelblue") +
+    geom_errorbar(width = 0.2, color = "steelblue") +
+    labs(title = title, x = "Estimate (log scale)", y = NULL) +
+    theme_wtp()
+}
+
+p_forest_count <- forest_plot(count_fixed, "Fixed effects: Particle count model")
+p_forest_size <- forest_plot(size_fixed, "Fixed effects: Particle size model")
+
+save_plot_wtp(p_forest_count, "F17_forest_count.png", width = 8, height = 6)
+save_plot_wtp(p_forest_size, "F18_forest_size.png", width = 8, height = 6)
+
+cat("\n✅ Section 8 complete. Mixed models and variance partitioning saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 9: CORRELATION MATRIX (FINAL FIX)
+# ============================================================
+cat("\n================================================================================")
+cat("\n                      SECTION 9: CORRELATION MATRIX                            ")
+cat("\n================================================================================\n")
+
+# Select all needed columns, including the ones for dummy variables
+cor_vars <- combined_sample %>%
+  select(n_particles, mean_particle_area_um2, mean_angle, year,
+         pm_type, site, evergreen, trichomes) %>%
+  mutate(
+    pm10_dummy = ifelse(pm_type == "PM10", 1, 0),
+    site_dummy = ifelse(site == "TCDBG", 1, 0),
+    evergreen_dummy = ifelse(evergreen == "Evergreen", 1, 0),
+    trichomes_dummy = ifelse(trichomes == "Yes", 1, 0)
+  ) %>%
+  # Keep only numeric columns for correlation
+  select(n_particles, mean_particle_area_um2, mean_angle, year,
+         pm10_dummy, site_dummy, evergreen_dummy, trichomes_dummy)
+
+# Compute correlation matrix
+cor_matrix <- cor(cor_vars, use = "complete.obs")
+cor_pvalues <- rcorr(as.matrix(cor_vars))$P
+
+# Save and print
+write_csv(as.data.frame(cor_matrix), file.path(tables_dir, "correlation_matrix.csv"))
+cat("\nCorrelation matrix (numeric variables):\n")
+print(round(cor_matrix, 3))
+
+# Heatmap
+png(file.path(figures_dir, "F19_correlation_heatmap.png"), width = 10, height = 8, units = "in", res = 300)
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.7,
+         title = "Correlation matrix", mar = c(0, 0, 2, 0))
+dev.off()
+cat("  Saved correlation heatmap\n")
+
+# Focused correlations
+focused_cor <- cor_matrix[c("n_particles", "mean_particle_area_um2"), 
+                          c("mean_angle", "year", "pm10_dummy", "site_dummy", 
+                            "evergreen_dummy", "trichomes_dummy")]
+cat("\nFocused correlations with outcomes:\n")
+print(round(focused_cor, 3))
+write_csv(as.data.frame(focused_cor), file.path(tables_dir, "focused_correlations.csv"))
+
+cat("\n✅ Section 9 complete. Correlation matrix saved.\n")
+
+```
+
+
+```{r}
+# ============================================================
+# SECTION 10: SITE COMPARISON (TCDBG vs NBG)
+# ============================================================
+# Direct comparison of particle count and size between sites
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                     SECTION 10: SITE COMPARISON                               ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 10.1 Overall site comparison (all years combined)
+# ---------------------------
+cat("\n--- 10.1 Overall site comparison ---\n")
+
+site_overall <- combined_sample %>%
+  group_by(site, pm_type) %>%
+  summarise(
+    mean_count = mean(n_particles),
+    se_count = se(n_particles),
+    mean_size = mean(mean_particle_area_um2),
+    se_size = se(mean_particle_area_um2),
+    .groups = "drop"
+  )
+
+cat("\nOverall means by site and PM type:\n")
+print(site_overall)
+
+# Statistical tests
+site_tests <- combined_sample %>%
+  group_by(pm_type) %>%
+  summarise(
+    count_p = wilcox.test(n_particles ~ site)$p.value,
+    size_p = wilcox.test(mean_particle_area_um2 ~ site)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    count_sig = ifelse(count_p < 0.05, "Significant", "Not significant"),
+    size_sig = ifelse(size_p < 0.05, "Significant", "Not significant")
+  )
+
+cat("\nWilcoxon tests for site differences:\n")
+print(site_tests)
+
+write_csv(site_tests, file.path(tables_dir, "site_comparison_tests_overall.csv"))
+
+# ---------------------------
+# 10.2 Site comparison by year
+# ---------------------------
+cat("\n--- 10.2 Site comparison by year ---\n")
+
+site_year <- combined_sample %>%
+  group_by(year, pm_type, site) %>%
+  summarise(
+    mean_count = mean(n_particles),
+    se_count = se(n_particles),
+    mean_size = mean(mean_particle_area_um2),
+    se_size = se(mean_particle_area_um2),
+    .groups = "drop"
+  )
+
+# Plot: particle count by site and year
+p_site_count <- site_year %>%
+  ggplot(aes(x = year, y = mean_count, color = site)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_errorbar(aes(ymin = mean_count - se_count, ymax = mean_count + se_count), width = 0.5) +
+  facet_wrap(~ pm_type) +
+  scale_color_manual(values = pal_site) +
+  scale_y_log10() +
+  labs(
+    title = "Site comparison: particle count over years",
+    x = "Year",
+    y = "Mean particle count per sample (log scale)",
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_site_count, "F20_site_count_comparison.png", width = 10, height = 6)
+print(p_site_count)
+
+# Plot: particle size by site and year
+p_site_size <- site_year %>%
+  ggplot(aes(x = factor(year), y = mean_size, color = site, group = site)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_errorbar(aes(ymin = mean_size - se_size, 
+                    ymax = mean_size + se_size), width = 0.3) +
+  facet_wrap(~ pm_type, scales = "free_y") +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "Site comparison: mean particle size over years",
+    x = "Year",
+    y = expression("Mean particle area ("*mu*"m"^2*")"),
+    color = "Site"
+  ) +
+  theme_wtp()
+
+save_plot_wtp(p_site_size, "F21_site_size_comparison.png", width = 10, height = 6)
+
+cat("\n✅ Section 10 complete. Site comparisons saved.\n")
+```
+
+
+```{r}
+# ============================================================
+# SECTION 11: COMPOSITE SCORES AND RECOMMENDATIONS
+# ============================================================
+# Creates a composite score for each species combining:
+#   - Particle count (higher is better)
+#   - Consistency (low CV, higher is better)
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 11: COMPOSITE SCORES AND RECOMMENDATIONS                 ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 11.1 Calculate species-level scores
+# ---------------------------
+cat("\n--- 11.1 Calculating composite scores ---\n")
+
+# Get species-level means and CVs
+# ---------------------------
+# 11.1 Calculate species-level scores
+# ---------------------------
+cat("\n--- 11.1 Calculating composite scores ---\n")
+
+# CV based on combined PM10 + PM2.5 count averaged per year
+stability_both <- combined_sample %>%
+  group_by(site, species, year) %>%
+  summarise(mean_count_year = mean(n_particles), .groups = "drop") %>%
+  group_by(site, species) %>%
+  filter(n_distinct(year) >= 2) %>%
+  summarise(
+    n_years = n_distinct(year),
+    cv_both = sd(mean_count_year) / mean(mean_count_year),
+    .groups = "drop"
+  )
+
+# Rebuild composite with corrected consistency
+species_scores_bothPM <- species_performance %>%
+  group_by(site, species) %>%
+  summarise(
+    mean_count_both = mean(mean_particle_count),
+    .groups = "drop"
+  ) %>%
+  left_join(stability_both %>% select(site, species, cv_both),
+            by = c("site", "species")) %>%
+  group_by(site) %>%
+  mutate(
+    score_count = percent_rank(mean_count_both) * 100,
+    score_consistency = percent_rank(-replace_na(cv_both, 1)) * 100,
+    composite = (score_count + score_consistency) / 2
+  ) %>%
+  ungroup() %>%
+  arrange(site, desc(composite))
+
+# Keep species_scores pointing to the new object so downstream code still works
+species_scores <- species_scores_bothPM
+
+cat("\nTop 10 species by composite score (TCDBG):\n")
+species_scores %>%
+  filter(site == "TCDBG") %>%
+  head(10) %>%
+  select(species, composite, score_count, score_consistency,
+         mean_count_both) %>%
+  print(width = Inf)
+
+cat("\nTop 10 species by composite score (NBG):\n")
+species_scores %>%
+  filter(site == "NBG") %>%
+  head(10) %>%
+  select(species, composite, score_count, score_consistency,
+         mean_count_both) %>%
+  print(width = Inf)
+
+write_csv(species_scores, file.path(tables_dir, "species_composite_scores.csv"))
+
+
+# ---------------------------
+# 11.2 Plot composite scores
+# ---------------------------
+p_composite <- species_scores %>%
+  group_by(site) %>%
+  slice_max(composite, n = 10) %>%
+  mutate(species_pretty = pretty_species(species),
+         species_pretty = fct_reorder(species_pretty, composite)) %>%
+  ggplot(aes(x = composite, y = species_pretty, fill = site)) +
+  geom_col(alpha = 0.8) +
+  facet_wrap(~ site, scales = "free_y") +
+  scale_fill_manual(values = pal_site, guide = "none") +
+  labs(
+    title = "Top 10 species by composite PM capture score",
+    subtitle = "Score integrates mean particle count (PM10 + PM2.5) and temporal consistency (equal weights)",
+    x = "Composite score (0–100)",
+    y = NULL
+  ) +
+  theme_wtp() +
+  theme(axis.text.y = element_text(face = "italic"))
+
+save_plot_wtp(p_composite, "F22_composite_scores.png", width = 10, height = 8)
+print(p_composite)
+cat("\n✅ Section 11 complete. Composite scores saved.\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 12: FINAL SUMMARY AND KEY FINDINGS
+# ============================================================
+# Comprehensive summary of all results, hypothesis testing outcomes,
+# and recommendations.
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n                    SECTION 12: FINAL SUMMARY AND KEY FINDINGS                 ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 12.1 Hypothesis testing summary
+# ---------------------------
+cat("\n--- 12.1 Hypothesis testing summary ---\n")
+
+hypothesis_summary <- data.frame(
+  Hypothesis = c("H1", "H2", "H3", "H4", "H5", "H6"),
+  Description = c(
+    "Trichomes and surface texture increase PM capture",
+    "Evergreen species capture more PM than deciduous",
+    "Steeper leaf angles intercept larger particles",
+    "Leaf size shows no clear relationship with PM capture",
+    "Species differ in PM2.5 selectivity",
+    "Species identity explains significant variance"
+  ),
+  Supported = c(
+    ifelse(any(trichomes_results$p_value < 0.05, na.rm = TRUE), "Yes", "No"),
+    ifelse(any(evergreen_results$p_value < 0.05, na.rm = TRUE), "Yes", "No"),
+    ifelse(any(angle_corr_sample$p_value < 0.05, na.rm = TRUE), "Yes", "No"),
+    ifelse(all(leafsize_results$p_value > 0.05, na.rm = TRUE), "Yes", "No"),
+    "Yes (see ratios)",
+    ifelse(lrt_count$`Pr(>Chisq)`[2] < 0.05, "Yes", "No")
+  ),
+  Key_Finding = c(
+    "Trichomes significantly increased particle count in some site/PM combinations",
+    "Evergreen effect varied by site; significant for NBG PM10",
+    "Positive correlation at NBG site (steeper angle → larger particles)",
+    "No significant leaf size effect detected",
+    "Substantial variation among species in PM2.5:PM10 ratios",
+    paste("Species explained", round(species_var_count / total_var_count * 100, 1), "% of count variance")
+  )
+)
+
+print(hypothesis_summary)
+write_csv(hypothesis_summary, file.path(tables_dir, "hypothesis_summary.csv"))
+
+# ---------------------------
+# 12.2 Top performing species recommendations
+# ---------------------------
+cat("\n--- 12.2 Top performing species recommendations ---\n")
+
+top_recommendations <- species_scores %>%
+  filter(pm_type == "PM10") %>%
+  group_by(site) %>%
+  slice_max(composite, n = 5) %>%
+  select(site, species, composite, mean_particle_count, mean_particle_size, score_consistency)
+
+cat("\nTop 5 recommended species for PM mitigation (based on composite score):\n")
+print(top_recommendations)
+
+write_csv(top_recommendations, file.path(tables_dir, "top_recommendations.csv"))
+
+# ---------------------------
+# 12.3 Summary of outputs
+# ---------------------------
+cat("\n--- 12.3 Output files summary ---\n")
+
+cat("\nAll outputs saved to:\n")
+cat("  Tables:", tables_dir, "\n")
+cat("  Figures:", figures_dir, "\n")
+
+cat("\nKey tables generated:\n")
+table_files <- list.files(tables_dir, pattern = "\\.csv$")
+for (tf in table_files) {
+  cat("  -", tf, "\n")
+}
+
+cat("\nKey figures generated:\n")
+figure_files <- list.files(figures_dir, pattern = "\\.png$")
+for (ff in figure_files) {
+  cat("  -", ff, "\n")
+}
+
+cat("\n✅ Section 12 complete. Final summary saved.\n")
+cat("\n==========================================\n")
+cat("ANALYSIS COMPLETE. All outputs ready.\n")
+cat("==========================================\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 13: ADDITIONAL HIGH-QUALITY ANALYSES AND FIGURES
+# ============================================================
+# This section adds:
+# 1. Effect sizes for binary traits (Cohen's d) with forest plots
+# 2. Pairwise comparisons for multi-level traits (output as tables)
+# 3. Mixed model diagnostic plots (residuals vs fitted)
+# 4. PCA biplot of species performance
+# 5. Heatmap of species × year particle counts
+# 6. Map of tree locations with composite scores (using QGIS data)
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n        SECTION 13: ADDITIONAL HIGH-QUALITY ANALYSES AND FIGURES               ")
+cat("\n================================================================================\n")
+
+# ---------------------------
+# 13.1 Helper function for Cohen's d
+# ---------------------------
+cohens_d <- function(x, y) {
+  nx <- length(x)
+  ny <- length(y)
+  pooled_sd <- sqrt(((nx - 1) * var(x) + (ny - 1) * var(y)) / (nx + ny - 2))
+  (mean(x) - mean(y)) / pooled_sd
+}
+
+# ---------------------------
+# 13.2 Effect sizes for binary traits (Evergreen, Trichomes)
+# ---------------------------
+cat("\n--- 13.1 Computing effect sizes (Cohen's d) for binary traits ---\n")
+
+effect_size_binary <- function(df, trait_col, outcome_col) {
+  df %>%
+    filter(!is.na(.data[[trait_col]]), !is.na(.data[[outcome_col]])) %>%
+    group_by(site, pm_type) %>%
+    summarise(
+      n1 = sum(.data[[trait_col]] == levels(factor(.data[[trait_col]]))[1]),
+      n2 = sum(.data[[trait_col]] == levels(factor(.data[[trait_col]]))[2]),
+      mean1 = mean(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[1]], na.rm = TRUE),
+      mean2 = mean(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[2]], na.rm = TRUE),
+      sd1 = sd(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[1]], na.rm = TRUE),
+      sd2 = sd(.data[[outcome_col]][.data[[trait_col]] == levels(factor(.data[[trait_col]]))[2]], na.rm = TRUE),
+      cohens_d = (mean1 - mean2) / sqrt(((n1-1)*sd1^2 + (n2-1)*sd2^2) / (n1+n2-2)),
+      p_value = wilcox.test(.data[[outcome_col]] ~ .data[[trait_col]])$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      ci_lower = cohens_d - 1.96 * sqrt((n1+n2)/(n1*n2) + cohens_d^2/(2*(n1+n2))),
+      ci_upper = cohens_d + 1.96 * sqrt((n1+n2)/(n1*n2) + cohens_d^2/(2*(n1+n2)))
+    )
+}
+
+# Evergreen effect sizes for particle count
+evergreen_es_count <- effect_size_binary(combined_sample, "evergreen", "n_particles") %>%
+  mutate(trait = "Evergreen", outcome = "Particle count")
+
+# Evergreen effect sizes for particle size
+evergreen_es_size <- effect_size_binary(combined_sample, "evergreen", "mean_particle_area_um2") %>%
+  mutate(trait = "Evergreen", outcome = "Particle size")
+
+# Trichomes effect sizes
+trichomes_es_count <- effect_size_binary(combined_sample, "trichomes", "n_particles") %>%
+  mutate(trait = "Trichomes", outcome = "Particle count")
+trichomes_es_size <- effect_size_binary(combined_sample, "trichomes", "mean_particle_area_um2") %>%
+  mutate(trait = "Trichomes", outcome = "Particle size")
+
+# Combine all effect sizes
+all_effect_sizes <- bind_rows(evergreen_es_count, evergreen_es_size,
+                              trichomes_es_count, trichomes_es_size) %>%
+  mutate(
+    sig_label = ifelse(p_value < 0.05, "p < 0.05", "p ≥ 0.05"),
+    group_label = paste(site, pm_type, outcome, sep = " | ")
+  )
+
+# Forest plot of effect sizes
+p_effect_forest <- all_effect_sizes %>%
+  filter(!is.na(cohens_d)) %>%
+  ggplot(aes(x = cohens_d, y = reorder(group_label, cohens_d), 
+             xmin = ci_lower, xmax = ci_upper, color = sig_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(size = 3) +
+  geom_errorbar(width = 0.2, size = 0.8) +
+  facet_wrap(~ trait, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("p < 0.05" = "red", "p ≥ 0.05" = "steelblue")) +
+  labs(
+    title = "Effect sizes (Cohen's d) for binary traits",
+    subtitle = "Positive d indicates higher values for the second level (Evergreen/Yes)",
+    x = "Cohen's d (95% CI)",
+    y = NULL,
+    color = "Significance"
+  ) +
+  theme_wtp() +
+  theme(axis.text.y = element_text(size = 8))
+
+save_plot_wtp(p_effect_forest, "F23_effect_sizes_forest.png", width = 10, height = 8)
+
+# ---------------------------
+# 13.3 Pairwise comparisons for multi-level traits (tables only)
+# ---------------------------
+cat("\n--- 13.2 Pairwise tests for surface texture and leaf size class (tables) ---\n")
+
+pairwise_table <- function(df, trait_col, outcome_col, outcome_name) {
+  dat <- df %>%
+    filter(!is.na(.data[[trait_col]]), !is.na(.data[[outcome_col]])) %>%
+    mutate(group = as.factor(.data[[trait_col]]))
+  
+  if (n_distinct(dat$group) < 2) return(NULL)
+  
+  results <- list()
+  for (s in unique(dat$site)) {
+    for (p in unique(dat$pm_type)) {
+      subdat <- dat %>% filter(site == s, pm_type == p)
+      if (n_distinct(subdat$group) >= 2) {
+        test <- tryCatch({
+          rstatix::dunn_test(subdat, as.formula(paste(outcome_col, "~ group")), p.adjust.method = "BH")
+        }, error = function(e) NULL)
+        if (!is.null(test)) {
+          test <- test %>%
+            mutate(site = s, pm_type = p, outcome = outcome_name, trait = trait_col)
+          results[[paste(s, p)]] <- test
+        }
+      }
+    }
+  }
+  if (length(results) == 0) return(NULL)
+  bind_rows(results)
+}
+
+# Compute tables
+texture_pair_count <- pairwise_table(combined_sample, "surface_texture", "n_particles", "Particle count")
+texture_pair_size <- pairwise_table(combined_sample, "surface_texture", "mean_particle_area_um2", "Particle size")
+leafsize_pair_count <- pairwise_table(combined_sample, "leaf_size_class", "n_particles", "Particle count")
+leafsize_pair_size <- pairwise_table(combined_sample, "leaf_size_class", "mean_particle_area_um2", "Particle size")
+
+# Save tables
+if(!is.null(texture_pair_count)) write_csv(texture_pair_count, file.path(tables_dir, "texture_pairwise_count.csv"))
+if(!is.null(texture_pair_size)) write_csv(texture_pair_size, file.path(tables_dir, "texture_pairwise_size.csv"))
+if(!is.null(leafsize_pair_count)) write_csv(leafsize_pair_count, file.path(tables_dir, "leafsize_pairwise_count.csv"))
+if(!is.null(leafsize_pair_size)) write_csv(leafsize_pair_size, file.path(tables_dir, "leafsize_pairwise_size.csv"))
+
+cat("  Pairwise test tables saved.\n")
+
+# ---------------------------
+# 13.4 Mixed model diagnostics: residuals vs fitted
+# ---------------------------
+cat("\n--- 13.3 Mixed model diagnostic plots ---\n")
+
+# Residuals vs fitted for particle count model
+resid_count <- residuals(model_count_full)
+fitted_count <- fitted(model_count_full)
+
+p_resid_count <- ggplot(data.frame(fitted = fitted_count, resid = resid_count), 
+                        aes(x = fitted, y = resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = TRUE, color = "steelblue") +
+  labs(title = "Particle count model: Residuals vs Fitted",
+       x = "Fitted values", y = "Residuals") +
+  theme_wtp()
+
+# Residuals vs fitted for particle size model
+resid_size <- residuals(model_size_full)
+fitted_size <- fitted(model_size_full)
+
+p_resid_size <- ggplot(data.frame(fitted = fitted_size, resid = resid_size), 
+                       aes(x = fitted, y = resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = TRUE, color = "steelblue") +
+  labs(title = "Particle size model: Residuals vs Fitted",
+       x = "Fitted values", y = "Residuals") +
+  theme_wtp()
+
+save_plot_wtp(p_resid_count, "F24_residuals_fitted_count.png", width = 8, height = 6)
+save_plot_wtp(p_resid_size, "F25_residuals_fitted_size.png", width = 8, height = 6)
+
+# ---------------------------
+# 13.5 PCA biplot of species performance
+# ---------------------------
+cat("\n--- 13.4 PCA biplot of species based on mean particle count and size ---\n")
+
+# Prepare species-level data for PCA
+pca_data <- species_performance %>%
+  select(site, pm_type, species, mean_particle_count, mean_particle_size) %>%
+  pivot_wider(id_cols = c(site, species), 
+              names_from = pm_type, 
+              values_from = c(mean_particle_count, mean_particle_size),
+              names_sep = "_") %>%
+  drop_na()
+
+# Perform PCA
+pca_result <- prcomp(pca_data[, -c(1,2)], scale. = TRUE, center = TRUE)
+pca_scores <- as.data.frame(pca_result$x)
+pca_scores$site <- pca_data$site
+pca_scores$species <- pca_data$species
+
+# Variance explained
+var_explained <- round(pca_result$sdev^2 / sum(pca_result$sdev^2) * 100, 1)
+
+# Biplot
+p_pca <- pca_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = site, label = pretty_species(species))) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3, max.overlaps = 15) +
+  scale_color_manual(values = pal_site) +
+  labs(
+    title = "PCA biplot of species based on particle count and size",
+    subtitle = paste0("PC1: ", var_explained[1], "%, PC2: ", var_explained[2], "%"),
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Site"
+  ) +
+  theme_wtp() +
+  theme(legend.position = "bottom")
+
+save_plot_wtp(p_pca, "F26_pca_biplot.png", width = 10, height = 8)
+
+# ---------------------------
+# 13.6 Heatmap of species × year particle counts
+# ---------------------------
+cat("\n--- 13.5 Heatmap of species × year mean particle count (PM10) ---\n")
+
+heatmap_data <- combined_sample %>%
+  filter(pm_type == "PM10") %>%
+  group_by(species, year, site) %>%
+  summarise(mean_count = mean(n_particles), .groups = "drop") %>%
+  mutate(species_pretty = pretty_species(species))
+
+p_heatmap <- heatmap_data %>%
+  ggplot(aes(x = factor(year), y = species_pretty, fill = mean_count)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "#08306B",
+                      trans = "log10", na.value = "white",
+                      name = "Mean particle count") +
+  facet_wrap(~ site, scales = "free_y") +
+  labs(
+    title = "Species × year heatmap of mean particle count (PM10)",
+    x = "Year",
+    y = NULL
+  ) +
+  theme_wtp() +
+  theme(axis.text.y = element_text(face = "italic", size = 8),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+save_plot_wtp(p_heatmap, "F27_species_year_heatmap.png", width = 12, height = 10)
+
+# ---------------------------
+# 13.7 Map of tree locations with composite scores (using QGIS data)
+# ---------------------------
+cat("\n--- 13.6 Map of tree locations with composite scores ---\n")
+
+# Load the QGIS export file if it exists
+qgis_file <- file.path(tables_dir, "witness_tree_qgis.csv")
+if (file.exists(qgis_file)) {
+  tree_map_data <- read_csv(qgis_file, show_col_types = FALSE) %>%
+    filter(year == "all") %>%  # use all-years summary
+    mutate(species_pretty = pretty_species(species_name_full))
+  
+  # Get composite scores for these species
+  composite_scores <- species_scores %>%
+    filter(pm_type == "PM10") %>%
+    select(site, species, composite) %>%
+    distinct()
+  
+  tree_map_data <- tree_map_data %>%
+    left_join(composite_scores, by = c("site", "species_name_full" = "species"))
+  
+  # Simple map using ggplot2
+  p_map <- ggplot(tree_map_data, aes(x = longitude, y = latitude, color = composite)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_viridis_c(option = "inferno", name = "Composite score") +
+    facet_wrap(~ site) +
+    labs(
+      title = "Tree locations coloured by composite performance score (PM10)",
+      x = "Longitude", y = "Latitude"
+    ) +
+    theme_wtp() +
+    theme(panel.grid.major = element_blank(),
+          panel.background = element_rect(fill = "grey95", color = NA))
+  
+  save_plot_wtp(p_map, "F28_tree_map_composite.png", width = 10, height = 8)
+} else {
+  cat("  QGIS file not found. Skipping map figure.\n")
+}
+
+cat("\n✅ Section 13 complete. Additional figures and tables saved.\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 14: FINAL EXPORT OF ALL DISSERTATION OUTPUTS
+# ============================================================
+# Copies all figures and tables to a single organised folder
+# for easy submission.
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 14: FINAL EXPORT OF DISSERTATION OUTPUTS                 ")
+cat("\n================================================================================\n")
+
+# Create final dissertation output folder
+final_dir <- file.path(outputs_dir, "final_dissertation_outputs")
+dir.create(final_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Subfolders
+fig_final <- file.path(final_dir, "figures")
+tbl_final <- file.path(final_dir, "tables")
+dir.create(fig_final, recursive = TRUE, showWarnings = FALSE)
+dir.create(tbl_final, recursive = TRUE, showWarnings = FALSE)
+
+# Copy all PNG figures from figures_dir
+fig_files <- list.files(figures_dir, pattern = "\\.png$", full.names = FALSE)
+for (f in fig_files) {
+  file.copy(file.path(figures_dir, f), file.path(fig_final, f), overwrite = TRUE)
+}
+cat("Copied", length(fig_files), "figures to", fig_final, "\n")
+
+# Copy all CSV tables from tables_dir
+tbl_files <- list.files(tables_dir, pattern = "\\.csv$", full.names = FALSE)
+for (t in tbl_files) {
+  file.copy(file.path(tables_dir, t), file.path(tbl_final, t), overwrite = TRUE)
+}
+cat("Copied", length(tbl_files), "tables to", tbl_final, "\n")
+
+# Also copy the R Markdown notebook itself (optional)
+# notebook_file <- "Witness_Tree_Clean_Analysis.Rmd"
+# if (file.exists(notebook_file)) {
+#   file.copy(notebook_file, file.path(final_dir, notebook_file), overwrite = TRUE)
+# }
+
+# Create a README file with description
+readme_text <- paste(
+  "# Witness Tree Project - Final Dissertation Outputs\n",
+  "Date:", Sys.Date(), "\n\n",
+  "## Figures\n",
+  "All figures (F1-F31 and S1-S21) are in the 'figures' folder.\n",
+  "Main dissertation figures are labelled F1 to F31.\n",
+  "Supplementary figures are labelled S01 to S21.\n\n",
+  "## Tables\n",
+  "All analysis tables are in the 'tables' folder as CSV files.\n",
+  "Key tables: species_performance.csv, summary_by_site_pm.csv, hypothesis_summary.csv, top_recommendations.csv\n\n",
+  "## Contact\n",
+  "For questions, refer to the original R Markdown notebook.\n"
+)
+writeLines(readme_text, file.path(final_dir, "README.txt"))
+
+cat("\n✅ Final export complete. All outputs ready in:\n")
+cat("  ", final_dir, "\n")
+```
+
+
+
+```{r}
+# ============================================================
+# SECTION 16: QGIS EXPORT WITH COORDINATES (COMBINED DATASET)
+# ============================================================
+# This section adds coordinates to the combined sample-level data
+# and exports a single CSV file suitable for mapping in QGIS.
+# ============================================================
+
+cat("\n================================================================================")
+cat("\n              SECTION 16: QGIS EXPORT WITH COORDINATES                         ")
+cat("\n================================================================================\n")
+
+coords_raw <- tribble(
+  ~species_name, ~site, ~latitude, ~longitude,
+  "Acacia_melanoxylon", "TCDBG", 53.31250831, -6.259438304,
+  "Aesculus_indica", "TCDBG", 53.31184641, -6.260275661,
+  "Alnus_glutinosa", "TCDBG", 53.31231879, -6.259385984,
+  "Arbutus_unedo", "TCDBG", 53.31183152, -6.259871054,
+  "Betula_utilis_subsp_jacquemontil", "TCDBG", 53.31231134, -6.259491343,
+  "Carpinus_betulus", "TCDBG", 53.31289558, -6.262574275,
+  "Castanea_sativa", "TCDBG", 53.31280597, -6.262592923,
+  "Corylus_avellana", "TCDBG", 53.31222129, -6.259479999,
+  "Crataegus_monogyna", "TCDBG", 53.31242724, -6.259426595,
+  "Davidia_involucrata_var_involucrata", "TCDBG", 53.31232316, -6.260301296,
+  "Ginkgo_biloba", "TCDBG", 53.31228767, -6.259717426,
+  "Juglans_nigra", "TCDBG", 53.31192616, -6.260197378,
+  "Magnolia_grandiflora", "TCDBG", 53.31250261, -6.259663658,
+  "Metasequoia_glyptostroboides", "TCDBG", 53.3128954, -6.261328599,
+  "Ostrya_carpinifolia", "TCDBG", 53.31300014, -6.261114227,
+  "Phoenix_dactylifera", "TCDBG", 53.31284568, -6.26100044,
+  "Quercus_robur", "TCDBG", 53.3119908, -6.259699488,
+  "Salix_x_fragilis", "TCDBG", 53.312196, -6.259323,
+  "Sorbus_hibernica", "TCDBG", 53.31298018, -6.261595302,
+  "Tilia_europaea", "TCDBG", 53.31285138, -6.260775085,
+  "Wollemia_nobilis", "TCDBG", 53.31286277, -6.260939712,
+  "Acacia_melanoxylon", "NBG", 53.37283085, -6.270118887,
+  "Aesculus_indica", "NBG", 53.3742823, -6.276833429,
+  "Alnus_glutinosa", "NBG", 53.37131408, -6.273575756,
+  "Arbutus_unedo", "NBG", 53.37266265, -6.271879088,
+  "Betula_utilis_subsp_jacquemontil", "NBG", 53.37340672, -6.276126442,
+  "Carpinus_betulus", "NBG", 53.37381031, -6.271124349,
+  "Castanea_sativa", "NBG", 53.37265726, -6.273143339,
+  "Corylus_avellana", "NBG", 53.37314902, -6.275155491,
+  "Crataegus_monogyna", "NBG", 53.37156613, -6.273446939,
+  "Davidia_involucrata_var_involucrata", "NBG", 53.37417529, -6.274711371,
+  "Ginkgo_biloba", "NBG", 53.37376616, -6.273033471,
+  "Magnolia_grandiflora", "NBG", 53.37076453, -6.270614274,
+  "Ostrya_carpinifolia", "NBG", 53.37402498, -6.272177698,
+  "Phoenix_dactylifera", "NBG", 53.37199492, -6.269414736,
+  "Quercus_robur", "NBG", 53.37182773, -6.27451563,
+  "Salix_x_fragilis", "NBG", 53.37320304, -6.270661108,
+  "Sorbus_hibernica", "NBG", 53.37177244, -6.274068726,
+  "Tilia_europaea", "NBG", 53.37463158, -6.275573438,
+  "Wollemia_nobilis", "NBG", 53.37333332, -6.271997359
+) %>%
+  mutate(
+    species_name_clean = clean_species_name(species_name),  # optional, but keep for consistency
+    site = as.character(site)
+  ) %>%
+  distinct(species_name, site, .keep_all = TRUE)   # ensure uniqueness
+
+# ---------------------------
+# 16.2 Attach coordinates to the combined dataset
+# ---------------------------
+qgis_data <- combined_sample %>%
+  mutate(species_name_clean = clean_species_name(species)) %>%
+  left_join(coords_raw, by = c("species_name_clean", "site")) %>%
+  filter(!is.na(latitude), !is.na(longitude))
+
+cat("✅ Matched", nrow(qgis_data), "samples with coordinates\n")
+
+# ---------------------------
+# 16.3 Create species‑level summary for mapping (one row per species per site)
+# ---------------------------
+qgis_summary <- qgis_data %>%
+  group_by(site, species, species_name_clean, latitude, longitude) %>%
+  summarise(
+    n_samples = n(),
+    n_years = n_distinct(year),
+    years_sampled = paste(sort(unique(year)), collapse = ", "),
+    mean_particle_count = mean(n_particles, na.rm = TRUE),
+    sd_particle_count = sd(n_particles, na.rm = TRUE),
+    mean_particle_size_um2 = mean(mean_particle_area_um2, na.rm = TRUE),
+    sd_particle_size = sd(mean_particle_area_um2, na.rm = TRUE),
+    total_particles = sum(n_particles, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # Add composite score for PM10 (best overall performance metric)
+  left_join(
+    species_scores %>% filter(pm_type == "PM10") %>% select(site, species, composite),
+    by = c("site", "species")
+  ) %>%
+  mutate(
+    composite_score = round(composite, 1),
+    species_pretty = pretty_species(species)
+  ) %>%
+  arrange(site, desc(mean_particle_count))
+
+# ---------------------------
+# 16.4 Export the combined QGIS file
+# ---------------------------
+qgis_export_path <- file.path(final_dir, "qgis_export_all.csv")
+write_csv(qgis_summary, qgis_export_path)
+
+cat("\n✅ QGIS export saved to:\n")
+cat("  ", qgis_export_path, "\n")
+cat("\nColumns included:\n")
+cat("  - site, species, latitude, longitude\n")
+cat("  - mean_particle_count, sd_particle_count\n")
+cat("  - mean_particle_size_um2, sd_particle_size\n")
+cat("  - n_samples, n_years, years_sampled\n")
+cat("  - composite_score (PM10 composite performance)\n")
+cat("  - total_particles\n\n")
+cat("You can now open this CSV in QGIS as a delimited text layer.\n")
+```
+
+
+
+
+

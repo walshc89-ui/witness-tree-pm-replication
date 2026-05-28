@@ -1,0 +1,26 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Rapp.history
+
+# R Markdown / knitr output
+*.html
+*_cache/
+*_files/
+/data/outputs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Office temp
+~$*.xlsx
+~$*.docx
+
+# QGIS temp
+*.qgz~
+*.qgs~

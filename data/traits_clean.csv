@@ -1,0 +1,22 @@
+tree_code,species_name_full,evergreen,surface_texture,trichomes,leaf_size_class,canopy_density,species_name_clean
+AG,Alnus glutinosa,Deciduous,medium,Yes,noto,medium,alnus_glutinosa
+AI,Aesculus indica,Deciduous,smooth,Yes,meso,high,aesculus_indica
+AM,Acacia melanoxylon,Evergreen,smooth,Yes,noto,medium,acacia_melanoxylon
+AU,Arbutus unedo,Evergreen,smooth,Yes,noto,high,arbutus_unedo
+BU,Betula utilis subsp. jacquemontii,Deciduous,smooth,Yes,micro,low,betula_utilis_subsp_jacquemontii
+CA,Corylus avellana,Deciduous,medium,Yes,noto,low,corylus_avellana
+CB,Carpinus betulus,Deciduous,medium,Yes,micro,high,carpinus_betulus
+CM,Crataegus monogyna,Deciduous,smooth,Yes,micro,low,crataegus_monogyna
+CS,Castanea sativa,Deciduous,smooth,Yes,meso,medium,castanea_sativa
+DI,Davidia involucrata var. involucrata,Deciduous,medium,Yes,meso,medium,davidia_involucrata_var_involucrata
+GB,Ginkgo biloba,Deciduous,medium,No,noto,medium,ginkgo_biloba
+JN,Juglans nigra,Deciduous,medium,Yes,noto,medium,juglans_nigra
+MG,Magnolia grandiflora,Evergreen,smooth,Yes,meso,high,magnolia_grandiflora
+MGL,Metasequoia glyptostroboides,Deciduous,medium,No,nano,low,metasequoia_glyptostroboides
+OC,Ostrya carpinifolia,Deciduous,medium,Yes,noto,medium,ostrya_carpinifolia
+PD,Phoenix dactylifera,Evergreen,medium,Yes,meso,low,phoenix_dactylifera
+QR,Quercus robur,Deciduous,smooth,Yes,noto,medium,quercus_robur
+SF,Salix x fragilis,Deciduous,smooth,Yes,noto,low,salix_x_fragilis
+SH,Sorbus hibernica,Deciduous,medium,Yes,noto,low,sorbus_hibernica
+WN,Wollemia nobilis,Evergreen,smooth,No,micro,medium,wollemia_nobilis
+TEU,Tilia europaea,Deciduous,medium,Yes,noto,high,tilia_europaea
