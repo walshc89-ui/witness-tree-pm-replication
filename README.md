@@ -81,7 +81,7 @@ contact the author.
 
 If you use this code or data, please cite the thesis:
 
-> Walsh, C. (2025) *Particulate matter capture by urban trees in Dublin: species
+> Walsh, C. (2026) *Particulate matter capture by urban trees in Dublin: species
 > variation, leaf trait drivers and implications for urban forestry.* Capstone thesis,
 > Trinity College Dublin.
 
